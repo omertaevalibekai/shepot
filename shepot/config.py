@@ -45,6 +45,10 @@ DEFAULTS: dict = {
     "insert_method": "paste",      # paste (Ctrl+V) | type (SendInput) | clipboard
     "restore_clipboard": True,
     "restore_delay": 0.6,          # через сколько вернуть прежний буфер
+    # --- скриншоты в терминал ---
+    "clipshot": False,             # картинка в буфере → PNG на диске + путь в буфере
+    "clipshot_dir": "",            # пусто = %TEMP%\claude-shots
+    "clipshot_keep_days": 7,       # через сколько дней убирать старые снимки
     # --- интерфейс ---
     "hud": True,
     "play_sounds": True,

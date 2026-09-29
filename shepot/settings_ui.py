@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import audio, hotkeys, providers, secrets, startup
+from . import audio, clipshot, hotkeys, providers, secrets, startup
 from .polish import LANGUAGE_NAMES
 
 MODE_LABELS = [
@@ -208,6 +208,7 @@ class SettingsDialog(QDialog):
         content.addWidget(self._text_group())
         content.addWidget(self._engine_group())
         content.addWidget(self._behaviour_group())
+        content.addWidget(self._clipshot_group())
         content.addStretch(1)
 
         scroll = QScrollArea()
@@ -408,6 +409,37 @@ class SettingsDialog(QDialog):
         form.addRow("", self.autostart)
         return box
 
+    def _clipshot_group(self) -> QGroupBox:
+        box = QGroupBox("Скриншоты в терминал")
+        form = QFormLayout(box)
+
+        self.clipshot = QCheckBox("Превращать картинку из буфера в путь к файлу")
+        self.clipshot.setChecked(bool(self.cfg.get("clipshot")))
+        self.clipshot.toggled.connect(self._sync_enabled)
+        form.addRow("", self.clipshot)
+
+        self.clipshot_dir = QLineEdit(self.cfg.get("clipshot_dir") or "")
+        self.clipshot_dir.setPlaceholderText(str(clipshot.default_dir()))
+        form.addRow("Папка", self.clipshot_dir)
+
+        self.clipshot_keep_days = QSpinBox()
+        self.clipshot_keep_days.setRange(0, 365)
+        self.clipshot_keep_days.setSuffix(" дн.")
+        self.clipshot_keep_days.setSpecialValueText("не удалять")
+        self.clipshot_keep_days.setValue(int(self.cfg.get("clipshot_keep_days")))
+        form.addRow("Хранить снимки", self.clipshot_keep_days)
+
+        hint = QLabel(
+            "Терминал не принимает картинку по Ctrl+V. Со включённым тумблером "
+            "снимок с Win+Shift+S сохраняется в PNG, а в буфер вместо картинки "
+            "ложится путь к нему — его и вставляет Ctrl+V.\n"
+            "Тумблер есть и в меню значка в трее, чтобы включать на ходу."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888;")
+        form.addRow("", hint)
+        return box
+
     # ----------------------------------------------------------- активность
     def _sync_enabled(self) -> None:
         local = self.stt_backend.currentData() == "local"
@@ -426,6 +458,10 @@ class SettingsDialog(QDialog):
         uses_clipboard = self.insert_method.currentData() == "paste"
         self.restore_clipboard.setEnabled(uses_clipboard)
         self.restore_delay.setEnabled(uses_clipboard and self.restore_clipboard.isChecked())
+
+        catching = self.clipshot.isChecked()
+        self.clipshot_dir.setEnabled(catching)
+        self.clipshot_keep_days.setEnabled(catching)
 
     # -------------------------------------------------------------- сохранение
     def _accept(self) -> None:
@@ -462,6 +498,9 @@ class SettingsDialog(QDialog):
                 "insert_method": self.insert_method.currentData(),
                 "restore_clipboard": self.restore_clipboard.isChecked(),
                 "restore_delay": self.restore_delay.value(),
+                "clipshot": self.clipshot.isChecked(),
+                "clipshot_dir": self.clipshot_dir.text().strip(),
+                "clipshot_keep_days": self.clipshot_keep_days.value(),
                 "hud": self.hud.isChecked(),
                 "play_sounds": self.play_sounds.isChecked(),
                 "autostart": self.autostart.isChecked(),

@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import audio, inserter, polish, providers, stt
+from . import audio, clipshot, inserter, polish, providers, stt
 from .config import Config
 from .history import History
 from .history_ui import HistoryDialog
@@ -87,6 +87,9 @@ class Controller(QObject):
         self._settings_dialog: SettingsDialog | None = None
         self._history_dialog: HistoryDialog | None = None
 
+        self.clipshot = clipshot.Watcher(self.cfg, parent=self)
+        self.clipshot.captured.connect(self._report_screenshot)
+
         self.requestStart.connect(self.start_dictation)
         self.requestFinish.connect(self.finish_dictation)
         self.requestCancel.connect(self.cancel_dictation)
@@ -101,6 +104,7 @@ class Controller(QObject):
         self.tray.show()
 
         self._apply_hotkeys(announce=False)
+        self.clipshot.set_enabled(bool(self.cfg.get("clipshot")))
         self._warm_up()
         # первый запуск: без ключа диктовать нечем — сразу открываем настройки
         QTimer.singleShot(500, self._prompt_for_key_if_needed)
@@ -123,6 +127,14 @@ class Controller(QObject):
         self.dictate_action = QAction("Начать диктовку", menu)
         self.dictate_action.triggered.connect(self.toggle_dictation)
         menu.addAction(self.dictate_action)
+
+        self.clipshot_action = QAction("Скриншоты в терминал", menu, checkable=True)
+        self.clipshot_action.setChecked(bool(self.cfg.get("clipshot")))
+        self.clipshot_action.setToolTip(
+            "Win+Shift+S — и Ctrl+V вставит путь к снимку вместо картинки"
+        )
+        self.clipshot_action.toggled.connect(self.set_clipshot)
+        menu.addAction(self.clipshot_action)
         menu.addSeparator()
 
         mode_menu = menu.addMenu("Режим")
@@ -179,6 +191,28 @@ class Controller(QObject):
         self.cfg.set(key, value)
         self.cfg.save()
         self._update_tooltip()
+
+    # ------------------------------------------------------------ скриншоты
+    def set_clipshot(self, enabled: bool) -> None:
+        """Тумблер: перехват картинок из буфера включается сразу, без перезапуска."""
+        enabled = bool(enabled)
+        changed = enabled != self.clipshot.enabled
+        self.clipshot.set_enabled(enabled)
+        self._set("clipshot", enabled)
+        if self.clipshot_action.isChecked() != enabled:
+            # пришли из настроек, а не из меню — галочку правим молча
+            self.clipshot_action.blockSignals(True)
+            self.clipshot_action.setChecked(enabled)
+            self.clipshot_action.blockSignals(False)
+        if changed and self.cfg.get("hud"):
+            message = "Скриншоты в терминал" if enabled else "Перехват скриншотов выключен"
+            self.hud.show_state("done", message, hide_after=1.4)
+
+    def _report_screenshot(self, _path: str) -> None:
+        if self.cfg.get("hud"):
+            self.hud.show_state("done", "Скрин → путь в буфере", hide_after=1.2)
+        if self.cfg.get("play_sounds"):
+            _beep(1180, 45)
 
     # ----------------------------------------------------------- горячие клавиши
     def _apply_hotkeys(self, announce: bool = True) -> bool:
@@ -347,6 +381,7 @@ class Controller(QObject):
             action.setChecked(action.data() == self.cfg.get("mode"))
         for action in self._tone_group.actions():
             action.setChecked(action.data() == self.cfg.get("tone"))
+        self.set_clipshot(bool(self.cfg.get("clipshot")))
         self._update_tooltip()
 
     def open_history(self) -> None:
@@ -360,6 +395,7 @@ class Controller(QObject):
         self._history_dialog = None
 
     def quit(self) -> None:
+        self.clipshot.set_enabled(False)
         self.hotkeys.stop()
         self.recorder.close()
         self.hud.hide_now()
