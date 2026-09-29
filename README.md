@@ -26,8 +26,8 @@
 
 1. Откройте [Releases](https://github.com/omertaevalibekai/shepot/releases/latest)
    и скачайте `Shepot-windows-x64.zip`.
-2. Распакуйте в удобное место, например `C:\Program Files\Shepot` или
-   `Документы\Shepot`.
+2. Распакуйте в удобную папку, например `Документы\Shepot` (не в Program
+   Files — туда нужны права администратора).
 3. Запустите `Shepot.exe`. Сборка не подписана сертификатом, поэтому Windows
    SmartScreen покажет предупреждение — **«Подробнее» → «Выполнить в любом
    случае»**.
