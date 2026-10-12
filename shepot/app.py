@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import audio, clipshot, inserter, polish, providers, stt
+from . import audio, clipshot, hotkeys, inserter, polish, providers, stt
 from .config import Config
 from .history import History
 from .history_ui import HistoryDialog
@@ -180,8 +180,16 @@ class Controller(QObject):
     def _update_tooltip(self) -> None:
         mode = dict(MODE_LABELS).get(self.cfg.get("mode"), "")
         self.tray.setToolTip(
-            f"{APP_TITLE}\n{self.cfg.get('hotkey').upper()} — диктовка\n{mode}"
+            f"{APP_TITLE}\n{self._hotkey_hint()}\n{mode}"
         )
+
+    def _hotkey_hint(self) -> str:
+        start = hotkeys.display(self.cfg.get("hotkey"))
+        if self.cfg.get("hotkey_mode") == "pair":
+            return f"{start} — начать, {hotkeys.display(self.cfg.get('hotkey_stop'))} — вставить"
+        if self.cfg.get("hotkey_mode") == "ptt":
+            return f"держать {start} — диктовка"
+        return f"{start} — диктовка"
 
     def _tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.Trigger:
@@ -221,6 +229,7 @@ class Controller(QObject):
                 self.cfg.get("hotkey"),
                 self.cfg.get("hotkey_mode"),
                 self.cfg.get("cancel_key"),
+                self.cfg.get("hotkey_stop") or "",
             )
         except Exception as exc:
             if announce:

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
+    QButtonGroup,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -65,35 +66,186 @@ INSERT_METHODS = [
 ]
 
 
-class HotkeyEdit(QLineEdit):
-    """Поле, которое записывает нажатое сочетание клавиш."""
+# Скан-коды модификаторов (с битом расширенной клавиши 0x100): только по ним
+# Qt отличает правый Ctrl от левого.
+_SIDE_BY_SCAN = {
+    0x1D: "left ctrl", 0x11D: "right ctrl", 0x2A: "left shift", 0x36: "right shift",
+    0x38: "left alt", 0x138: "right alt",
+}
+_SIDE_BY_VK = {0x5B: "left win", 0x5C: "right win"}
+_GENERIC = {"left ctrl": "ctrl", "right ctrl": "ctrl", "left shift": "shift",
+            "right shift": "shift", "left alt": "alt", "right alt": "alt",
+            "left win": "win", "right win": "win"}
+_MOUSE = {Qt.MiddleButton: "mouse middle", Qt.BackButton: "mouse back",
+          Qt.ForwardButton: "mouse forward"}
 
-    def __init__(self, parent=None) -> None:
+
+def _vk_name(vk: int) -> str:
+    """Имя клавиши для строки привязки по виртуальному коду Windows."""
+    for name, code in hotkeys.NAMED_KEYS.items():
+        if code == vk:
+            return name
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return chr(vk).lower()
+    if 0x70 <= vk <= 0x87:
+        return f"f{vk - 0x6F}"
+    if 0x60 <= vk <= 0x69:
+        return f"num {vk - 0x60}"
+    return f"vk {vk:02x}"
+
+
+class KeyCapture(QPushButton):
+    """Кнопка записи привязки: нажал на неё — она ждёт клавишу или кнопку мыши.
+
+    Сочетание фиксируется, когда отпущены все клавиши: так одиночный
+    модификатор (правый Ctrl) тоже можно назначить. Esc без других клавиш
+    отменяет запись, клик мимо — тоже.
+    """
+
+    changed = Signal(str)
+    PLACEHOLDER = "Нажмите, чтобы назначить"
+
+    def __init__(self, value: str = "", parent=None) -> None:
         super().__init__(parent)
-        self.setReadOnly(True)
-        self.setPlaceholderText("Нажмите сочетание…")
+        self._value = value
+        self._listening = False
+        self._held: list[str] = []
+        self._peak: list[str] = []
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(48)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.clicked.connect(self._start)
+        self._refresh()
+
+    def value(self) -> str:
+        return self._value
+
+    def set_value(self, value: str) -> None:
+        self._value = value
+        self._refresh()
+        self.changed.emit(value)
+
+    # ------------------------------------------------------------- состояние
+    def _refresh(self) -> None:
+        if self._listening:
+            self.setText("●  Нажмите клавишу или кнопку мыши…   Esc — отмена")
+            self.setStyleSheet(
+                "QPushButton { text-align: left; padding: 10px 14px; border-radius: 10px;"
+                " border: 2px solid #d6333f; background: rgba(214,51,63,0.10); color: #d6333f;"
+                " font-weight: 600; }"
+            )
+            return
+        shown = hotkeys.display(self._value) if self._value else self.PLACEHOLDER
+        self.setText(shown)
+        self.setStyleSheet(
+            "QPushButton { text-align: left; padding: 10px 14px; border-radius: 10px;"
+            " border: 2px dashed rgba(140,150,160,0.75); background: rgba(127,127,127,0.08);"
+            f" font-family: 'Cascadia Mono', Consolas, monospace; font-size: 14px;"
+            f" font-weight: {'600' if self._value else '400'}; }}"
+            " QPushButton:hover { border-color: #2f6fdf; }"
+            " QPushButton:focus { border-color: #2f6fdf; }"
+        )
+
+    def _start(self) -> None:
+        if self._listening:
+            return
+        self._listening = True
+        self._held, self._peak = [], []
+        self._refresh()
+        self.setFocus()
+        self.grabKeyboard()
+        self.grabMouse()
+
+    def _finish(self, value: str | None) -> None:
+        self._listening = False
+        self.releaseKeyboard()
+        self.releaseMouse()
+        if value is not None:
+            self._value = value
+            self.changed.emit(value)
+        self._refresh()
+
+    # ------------------------------------------------------------- события
+    def _ident(self, event) -> str:
+        scan, vk = event.nativeScanCode(), event.nativeVirtualKey()
+        if scan in _SIDE_BY_SCAN:
+            return _SIDE_BY_SCAN[scan]
+        if vk in _SIDE_BY_VK:
+            return _SIDE_BY_VK[vk]
+        return _vk_name(vk)
 
     def keyPressEvent(self, event) -> None:
-        key = event.key()
-        if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta):
+        if not self._listening:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+                self._start()
+                return
+            super().keyPressEvent(event)
             return
-        parts = []
-        mods = event.modifiers()
-        if mods & Qt.ControlModifier:
-            parts.append("ctrl")
-        if mods & Qt.AltModifier:
-            parts.append("alt")
-        if mods & Qt.ShiftModifier:
-            parts.append("shift")
-        if mods & Qt.MetaModifier:
-            parts.append("windows")
-        name = QKeySequence(key).toString().strip().lower()
-        if not name:
+        event.accept()
+        if event.isAutoRepeat():
             return
-        parts.append(name)
-        candidate = "+".join(parts)
-        if hotkeys.is_valid(candidate):
-            self.setText(candidate)
+        ident = self._ident(event)
+        if ident == "esc" and not self._held:
+            self._finish(None)
+            return
+        if ident not in self._held:
+            self._held.append(ident)
+        if len(self._held) >= len(self._peak):
+            self._peak = list(self._held)
+
+    def keyReleaseEvent(self, event) -> None:
+        if not self._listening:
+            super().keyReleaseEvent(event)
+            return
+        event.accept()
+        if event.isAutoRepeat():
+            return
+        ident = self._ident(event)
+        if ident in self._held:
+            self._held.remove(ident)
+        if not self._held and self._peak:
+            self._finish(self._compose(self._peak))
+
+    def mousePressEvent(self, event) -> None:
+        if not self._listening:
+            super().mousePressEvent(event)
+            return
+        event.accept()
+        if event.button() in _MOUSE:
+            self._finish(_MOUSE[event.button()])
+        elif not self.rect().contains(event.position().toPoint()):
+            self._finish(None)                      # клик мимо — отмена
+
+    def focusOutEvent(self, event) -> None:
+        if self._listening:
+            self._finish(None)
+        super().focusOutEvent(event)
+
+    @staticmethod
+    def _compose(chord: list[str]) -> str:
+        mods = [k for k in chord if k in _GENERIC]
+        keys = [k for k in chord if k not in _GENERIC]
+        if not keys:
+            return mods[-1] if len(mods) == 1 else "+".join(
+                dict.fromkeys(_GENERIC[m] for m in mods[:-1])) + "+" + mods[-1]
+        generic = list(dict.fromkeys(_GENERIC[m] for m in mods))
+        return "+".join(generic + [keys[-1]])
+
+
+class ModeCard(QPushButton):
+    """Карточка режима: название и одна строка пояснения."""
+
+    def __init__(self, title: str, hint: str, parent=None) -> None:
+        super().__init__(f"{title}\n{hint}", parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(64)
+        self.setStyleSheet(
+            "QPushButton { text-align: left; padding: 10px 12px; border-radius: 10px;"
+            " border: 2px solid rgba(140,150,160,0.45); background: rgba(127,127,127,0.06); }"
+            " QPushButton:hover { border-color: rgba(140,150,160,0.9); }"
+            " QPushButton:checked { border-color: #2f6fdf; background: rgba(47,111,223,0.14); }"
+        )
 
 
 class _CheckThread(QThread):
@@ -263,26 +415,116 @@ class SettingsDialog(QDialog):
         return box
 
     def _hotkey_group(self) -> QGroupBox:
-        box = QGroupBox("Горячая клавиша")
-        form = QFormLayout(box)
+        box = QGroupBox("Горячие клавиши")
+        layout = QVBoxLayout(box)
+        layout.setSpacing(12)
 
-        self.hotkey_edit = HotkeyEdit()
-        self.hotkey_edit.setText(self.cfg.get("hotkey"))
-        form.addRow("Сочетание", self.hotkey_edit)
+        cards = QHBoxLayout()
+        self.mode_group = QButtonGroup(self)
+        self.mode_cards: dict[str, ModeCard] = {}
+        for key, title, hint in (
+            ("toggle", "Переключатель", "нажал — старт, ещё раз — стоп"),
+            ("ptt", "Удерживать", "держу — пишет, отпустил — стоп"),
+            ("pair", "Две клавиши", "одна — старт, другая — стоп"),
+        ):
+            card = ModeCard(title, hint)
+            self.mode_group.addButton(card)
+            self.mode_cards[key] = card
+            cards.addWidget(card)
+        layout.addLayout(cards)
+        current = self.cfg.get("hotkey_mode")
+        self.mode_cards.get(current, self.mode_cards["toggle"]).setChecked(True)
+        self.mode_group.buttonToggled.connect(lambda *_: self._sync_hotkeys())
 
-        self.hotkey_mode = QComboBox()
-        _fill(
-            self.hotkey_mode,
-            [("toggle", "Нажал — пишет, нажал ещё раз — вставляет"),
-             ("ptt", "Держу — пишет, отпустил — вставляет")],
-            self.cfg.get("hotkey_mode"),
+        form = QFormLayout()
+        form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.hotkey_capture = KeyCapture(self.cfg.get("hotkey"))
+        self.hotkey_label = QLabel("Клавиша")
+        form.addRow(self.hotkey_label, self.hotkey_capture)
+        self.stop_capture = KeyCapture(self.cfg.get("hotkey_stop") or "")
+        self.stop_label = QLabel("Закончить и вставить")
+        form.addRow(self.stop_label, self.stop_capture)
+        layout.addLayout(form)
+        self.hotkey_capture.changed.connect(lambda _: self._sync_hotkeys())
+        self.stop_capture.changed.connect(lambda _: self._sync_hotkeys())
+
+        self.hotkey_verdict = QLabel()
+        self.hotkey_verdict.setWordWrap(True)
+        layout.addWidget(self.hotkey_verdict)
+
+        bottom = QHBoxLayout()
+        self.cancel_with_esc = QCheckBox("Esc отменяет запись без вставки")
+        self.cancel_with_esc.setChecked(bool(self.cfg.get("cancel_key")))
+        bottom.addWidget(self.cancel_with_esc)
+        bottom.addStretch(1)
+        reset = QPushButton("Вернуть Ctrl + Пробел")
+        reset.clicked.connect(self._reset_hotkey)
+        bottom.addWidget(reset)
+        layout.addLayout(bottom)
+
+        hint = QLabel(
+            "Подходит любая клавиша или сочетание, одиночный правый Ctrl / Alt / Shift, "
+            "а также средняя и боковые кнопки мыши. Сочетания перехватываются Шёпотом; "
+            "одиночные модификаторы и кнопки мыши другие программы тоже видят."
         )
-        form.addRow("Режим", self.hotkey_mode)
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888;")
+        layout.addWidget(hint)
 
-        hint = QLabel("Esc отменяет текущую диктовку.")
-        hint.setStyleSheet("color: #777;")
-        form.addRow("", hint)
+        self._sync_hotkeys()
         return box
+
+    def _hotkey_mode(self) -> str:
+        for key, card in self.mode_cards.items():
+            if card.isChecked():
+                return key
+        return "toggle"
+
+    def _reset_hotkey(self) -> None:
+        self.mode_cards["toggle"].setChecked(True)
+        self.hotkey_capture.set_value("ctrl+space")
+
+    def _hotkey_problem(self) -> tuple[str, str]:
+        """Итог проверки привязок: (ok | warn | bad, текст)."""
+        mode = self._hotkey_mode()
+        main = self.hotkey_capture.value()
+        if not main:
+            return "bad", "Назначьте клавишу: нажмите на поле, затем нужную клавишу."
+        verdict = hotkeys.assess(main)
+        if verdict[0] == "bad":
+            return verdict
+        if mode == "pair":
+            stop = self.stop_capture.value()
+            if not stop:
+                return "bad", "Назначьте клавишу, которая заканчивает запись."
+            stop_verdict = hotkeys.assess(stop, other=main)
+            if stop_verdict[0] == "bad" or verdict[0] == "ok":
+                verdict = stop_verdict if stop_verdict[0] != "ok" else verdict
+        for value in [main] + ([self.stop_capture.value()] if mode == "pair" else []):
+            taken = hotkeys.try_register(value)
+            if taken:
+                return "bad", taken
+        if mode == "ptt" and main in hotkeys.MOUSE_BUTTONS and verdict[0] == "ok":
+            return "ok", f"Готово. Держите {hotkeys.display(main)}, пока говорите."
+        return verdict
+
+    def _sync_hotkeys(self) -> None:
+        mode = self._hotkey_mode()
+        pair = mode == "pair"
+        self.stop_label.setVisible(pair)
+        self.stop_capture.setVisible(pair)
+        self.hotkey_label.setText({"toggle": "Старт и стоп", "ptt": "Удерживать",
+                                   "pair": "Начать запись"}[mode])
+        kind, text = self._hotkey_problem()
+        colors = {"ok": ("#1f8a4c", "rgba(31,138,76,0.12)"),
+                  "warn": ("#a8620a", "rgba(168,98,10,0.12)"),
+                  "bad": ("#c62f3a", "rgba(198,47,58,0.12)")}
+        fg, bg = colors[kind]
+        self.hotkey_verdict.setText(text)
+        self.hotkey_verdict.setStyleSheet(
+            f"QLabel {{ color: {fg}; background: {bg}; border-radius: 8px; padding: 8px 12px; }}"
+        )
 
     def _text_group(self) -> QGroupBox:
         box = QGroupBox("Обработка текста")
@@ -465,10 +707,11 @@ class SettingsDialog(QDialog):
 
     # -------------------------------------------------------------- сохранение
     def _accept(self) -> None:
-        hotkey = self.hotkey_edit.text().strip()
-        if not hotkeys.is_valid(hotkey):
-            QMessageBox.warning(self, "Шёпот", "Укажите корректное сочетание клавиш.")
+        kind, problem = self._hotkey_problem()
+        if kind == "bad":
+            QMessageBox.warning(self, "Шёпот", f"Горячая клавиша: {problem}")
             return
+        hotkey_mode = self._hotkey_mode()
 
         vocabulary = [
             line.strip()
@@ -478,8 +721,10 @@ class SettingsDialog(QDialog):
 
         self.cfg.update(
             {
-                "hotkey": hotkey,
-                "hotkey_mode": self.hotkey_mode.currentData(),
+                "hotkey": self.hotkey_capture.value(),
+                "hotkey_stop": self.stop_capture.value() if hotkey_mode == "pair" else "",
+                "hotkey_mode": hotkey_mode,
+                "cancel_key": "esc" if self.cancel_with_esc.isChecked() else "",
                 "mode": self.mode.currentData(),
                 "tone": self.tone.currentData(),
                 "source_language": self.source_language.currentData(),

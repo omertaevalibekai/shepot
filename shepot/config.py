@@ -19,7 +19,8 @@ TONES = ("preserve", "neutral", "casual", "formal")
 DEFAULTS: dict = {
     # --- горячие клавиши ---
     "hotkey": "ctrl+space",
-    "hotkey_mode": "toggle",       # toggle | ptt (push-to-talk)
+    "hotkey_mode": "toggle",       # toggle | ptt (push-to-talk) | pair (старт и стоп разными)
+    "hotkey_stop": "",             # клавиша остановки для режима pair
     "cancel_key": "esc",
     # --- обработка ---
     "mode": "clean",               # raw | clean | translate
