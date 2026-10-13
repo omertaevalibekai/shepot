@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import threading
+import time
 import winsound
 
 from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import audio, clipshot, hotkeys, inserter, polish, providers, stt
+from . import audio, clipshot, hotkeys, inserter, polish, providers, selection, stt
 from .config import Config
 from .history import History
 from .history_ui import HistoryDialog
 from .hotkeys import HotkeyManager
+from .edit_panel import EditPanel
 from .hud import Hud
 from .settings_ui import MODE_LABELS, TONE_LABELS, SettingsDialog
 
@@ -45,6 +47,20 @@ def make_icon(color: QColor) -> QIcon:
     return QIcon(pixmap)
 
 
+def _log_edit(info: dict) -> None:
+    """Журнал поиска выделения: какое окно, каким способом, сколько символов. Сам текст не пишем."""
+    try:
+        from .config import CONFIG_DIR
+        path = CONFIG_DIR / "edit.log"
+        if path.exists() and path.stat().st_size > 64_000:
+            path.unlink()
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"{stamp} {info}\n")
+    except Exception:
+        pass
+
+
 def _beep(frequency: int, duration: int) -> None:
     threading.Thread(
         target=lambda: _safe_beep(frequency, duration), daemon=True
@@ -67,6 +83,8 @@ class Controller(QObject):
     resultReady = Signal(str, float)
     inserted = Signal(bool)
     failed = Signal(str)
+    selectionFound = Signal(str)
+    editReady = Signal(str)
 
     def __init__(self, app: QApplication) -> None:
         super().__init__()
@@ -84,6 +102,14 @@ class Controller(QObject):
             on_cancel=self.requestCancel.emit,
         )
         self._busy = False
+        # голосовая правка: выделение забирается в фоне, пока человек говорит
+        self._selection: str | None = None
+        self._selection_ready = threading.Event()
+        self._selection_ready.set()
+        self._job_is_edit = False
+        self._target_window = 0
+        self._target_is_terminal = False
+        self.edit_panel = EditPanel()
         self._settings_dialog: SettingsDialog | None = None
         self._history_dialog: HistoryDialog | None = None
 
@@ -97,6 +123,10 @@ class Controller(QObject):
         self.resultReady.connect(self._deliver)
         self.inserted.connect(self._report_insertion)
         self.failed.connect(self._show_error)
+        self.selectionFound.connect(self._open_edit_panel)
+        self.editReady.connect(self._deliver_edit)
+        self.edit_panel.chosen.connect(self._run_edit)
+        self.edit_panel.cancelled.connect(self._edit_cancelled)
 
         self.tray = QSystemTrayIcon(make_icon(IDLE_COLOR))
         self.tray.activated.connect(self._tray_activated)
@@ -248,12 +278,18 @@ class Controller(QObject):
             self.start_dictation()
 
     def start_dictation(self) -> None:
+        if self.edit_panel.isVisible():
+            self.edit_panel.cancel()                  # повторное нажатие закрывает панель правки
+            return
         if self._busy or self.recorder.is_recording:
             return
         if providers.missing_key(self.cfg) is not None:
             self._show_error("Не указан ключ API — откройте настройки")
             self._prompt_for_key_if_needed()
             return
+        # окно, в котором человек работал: в него вернём фокус и вставим правку
+        self._target_window = selection.foreground_window()
+        self._target_is_terminal = selection.is_terminal(selection.foreground_app())
         started = self.recorder.start(
             device_index=self.cfg.get("input_device"),
             max_seconds=float(self.cfg.get("max_seconds")),
@@ -265,6 +301,83 @@ class Controller(QObject):
             _beep(880, 55)
         if self.cfg.get("hud"):
             self.hud.show_state("listening")
+        # Запись идёт сразу, чтобы не потерять первые слова. Параллельно смотрим,
+        # нет ли выделения: если есть — это не диктовка, а правка, запись отменяем.
+        self._selection = None
+        if self.cfg.get("voice_edit"):
+            self._selection_ready.clear()
+            threading.Thread(target=self._grab_selection, daemon=True,
+                             name="shepot-selection").start()
+
+    def _grab_selection(self) -> None:
+        try:
+            text = selection.grab(before_send=lambda: self.hotkeys.ignore_other_keys(0.5))
+        except Exception as exc:
+            text = None
+            selection.last["error"] = repr(exc)
+        self._selection = text
+        self._selection_ready.set()
+        _log_edit(selection.last)
+        if text:
+            self.selectionFound.emit(text)
+
+    def _open_edit_panel(self, text: str) -> None:
+        if self.recorder.is_recording:
+            self.recorder.cancel()
+            self.hotkeys.notify_stopped()
+        self._busy = False                            # короткое удержание уже ушло в _process — он отступит
+        self.tray.setIcon(make_icon(IDLE_COLOR))
+        anchor = self.hud.capsule_anchor()
+        width = self.hud.hand_over()
+        self.edit_panel.open(text, anchor, width)
+
+    def _run_edit(self, instruction: str, width: float) -> None:
+        source = self._selection
+        if not source:
+            return
+        self._busy = True
+        self.tray.setIcon(make_icon(BUSY_COLOR))
+        if self.cfg.get("hud"):
+            self.hud.show_state("processing", "Переписываю", from_width=width)
+        snapshot = _Snapshot(self.cfg.as_dict())
+
+        def work() -> None:
+            try:
+                text = polish.edit(source, instruction, snapshot)
+            except Exception as exc:                  # сеть, ключ, отказ модели
+                self.failed.emit(f"Не переписал: {exc}")
+                return
+            self.editReady.emit(text)
+
+        threading.Thread(target=work, daemon=True, name="shepot-edit").start()
+
+    def _deliver_edit(self, text: str) -> None:
+        self._busy = False
+        self.tray.setIcon(make_icon(IDLE_COLOR))
+        self._job_is_edit = True
+        self.history.add(text, "edit", 0.0)
+        target = self._target_window
+        method = self.cfg.get("insert_method")
+        restore = bool(self.cfg.get("restore_clipboard"))
+        delay = float(self.cfg.get("restore_delay"))
+
+        def deliver() -> None:
+            # панель забрала фокус — возвращаем его окну, где осталось выделение
+            if not selection.focus_window(target):
+                inserter.set_clipboard_text(text)
+                self.inserted.emit(False)
+                return
+            try:
+                ok = inserter.insert(text, method=method,
+                                     restore_clipboard=restore, restore_delay=delay)
+            except Exception:
+                ok = False
+            self.inserted.emit(ok)
+
+        threading.Thread(target=deliver, daemon=True, name="shepot-insert").start()
+
+    def _edit_cancelled(self) -> None:
+        selection.focus_window(self._target_window)
 
     def finish_dictation(self) -> None:
         if not self.recorder.is_recording:
@@ -283,7 +396,8 @@ class Controller(QObject):
         seconds = _wav_seconds(wav)
         if seconds < float(self.cfg.get("min_seconds")):
             self.tray.setIcon(make_icon(IDLE_COLOR))
-            self.hud.hide_now()
+            if self._selection_ready.is_set() and not self._selection:
+                self.hud.hide_now()                   # иначе остров вот-вот уступит место панели
             return
 
         self._busy = True
@@ -304,6 +418,10 @@ class Controller(QObject):
 
     def _process(self, wav: bytes, seconds: float) -> None:
         snapshot = _Snapshot(self.cfg.as_dict())
+        self._selection_ready.wait(1.0)               # очень короткая запись: выделение ещё в пути
+        if self._selection:
+            return                                    # это была правка: ею занимается панель
+        self._job_is_edit = False
         try:
             transcript = stt.transcribe(wav, snapshot)
             text = polish.polish(transcript, snapshot)
@@ -345,8 +463,16 @@ class Controller(QObject):
 
     def _report_insertion(self, delivered: bool) -> None:
         if self.cfg.get("hud"):
-            message = "Вставлено" if delivered else "Скопировано в буфер"
-            self.hud.show_state("done", message, hide_after=1.2)
+            if self._job_is_edit and delivered and self._target_is_terminal:
+                # в терминале выделен вывод, заменить его нельзя — текст встал в строку ввода
+                self.hud.show_state("done", "Вставлено в строку ввода", hide_after=1.8)
+            elif self._job_is_edit and delivered:
+                self.hud.show_state("done", "Заменено", hide_after=1.8, hint="Ctrl+Z вернёт")
+            elif self._job_is_edit:
+                self.hud.show_state("done", "Готово, вставьте Ctrl+V", hide_after=3.0)
+            else:
+                message = "Вставлено" if delivered else "Скопировано в буфер"
+                self.hud.show_state("done", message, hide_after=1.2)
 
     def _show_error(self, message: str) -> None:
         self._busy = False

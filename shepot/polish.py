@@ -137,6 +137,39 @@ _FENCE = re.compile(r"^```[a-zA-Z0-9]*\n(.*)\n```$", re.DOTALL)
 _QUOTE_PAIRS = {'"': '"', "«": "»", "“": "”"}
 
 
+EDIT_RULES = """You rewrite selected text. The user selected a piece of text in some app \
+and chose or typed a short request about how to change it.
+
+Rules:
+- Apply the request to the selected text and return the full replacement for the selection.
+- Keep the language of the selection unless the request asks for another language.
+- Keep everything the request does not ask to change: facts, numbers, names, line breaks.
+- Never answer the text, comment on it or add new facts.
+- Output ONLY the replacement text: no preamble, no quotes, no markdown fences."""
+
+
+def _call(cfg, system: str, text: str) -> str:
+    provider = cfg.get("llm_provider")
+    return _anthropic(cfg, system, text) if provider == "anthropic" else _openai(cfg, system, text)
+
+
+def edit(selection: str, request: str, cfg) -> str:
+    """Переписывает выделенный текст по просьбе (стиль из панели или свой текст)."""
+    request = (request or "").strip()
+    if not request:
+        raise PolishError("Пустая просьба")
+    system = EDIT_RULES
+    vocabulary = [t.strip() for t in (cfg.get("vocabulary") or []) if t.strip()]
+    if vocabulary:
+        system += "\n\nSpell these names and terms exactly like this: " + ", ".join(vocabulary) + "."
+    message = f"<selection>\n{selection}\n</selection>\n\n<request>\n{request}\n</request>"
+    if cfg.get("llm_provider") == "none":
+        # «без обработки» относится к диктовке; правка без модели невозможна,
+        # поэтому берём OpenAI — его ключ уже есть для распознавания
+        return _clean(_openai(cfg, system, message)) or selection
+    return _clean(_call(cfg, system, message)) or selection
+
+
 def polish(text: str, cfg) -> str:
     """Возвращает готовый к вставке текст."""
     text = (text or "").strip()
@@ -144,11 +177,10 @@ def polish(text: str, cfg) -> str:
         return ""
     if cfg.get("mode") == "raw" or cfg.get("llm_provider") == "none":
         return text
+    return _clean(_call(cfg, build_system_prompt(cfg), text)) or text
 
-    system = build_system_prompt(cfg)
-    provider = cfg.get("llm_provider")
-    result = _anthropic(cfg, system, text) if provider == "anthropic" else _openai(cfg, system, text)
 
+def _clean(result: str) -> str:
     result = (result or "").strip()
     fenced = _FENCE.match(result)
     if fenced:
@@ -159,4 +191,4 @@ def polish(text: str, cfg) -> str:
         inner = result[1:-1].strip()
         if result[-1] == closing and closing not in inner:
             result = inner
-    return result or text
+    return result

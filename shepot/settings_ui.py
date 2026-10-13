@@ -638,6 +638,16 @@ class SettingsDialog(QDialog):
         )
         form.addRow("Возврат буфера через", self.restore_delay)
 
+        self.voice_edit = QCheckBox("Правка выделенного текста по горячей клавише")
+        self.voice_edit.setChecked(bool(self.cfg.get("voice_edit")))
+        self.voice_edit.setToolTip(
+            "Выделите текст и нажмите горячую клавишу: вместо записи откроется панель —\n"
+            "выберите стиль или напишите, как изменить, и выделение заменится.\n"
+            "В Windows Terminal результат встаёт в строку ввода. В редакторах кода и других\n"
+            "терминалах не включается: там Ctrl+C прерывает процесс."
+        )
+        form.addRow("", self.voice_edit)
+
         self.hud = QCheckBox("Показывать индикатор поверх окон")
         self.hud.setChecked(bool(self.cfg.get("hud")))
         form.addRow("", self.hud)
@@ -746,6 +756,7 @@ class SettingsDialog(QDialog):
                 "clipshot": self.clipshot.isChecked(),
                 "clipshot_dir": self.clipshot_dir.text().strip(),
                 "clipshot_keep_days": self.clipshot_keep_days.value(),
+                "voice_edit": self.voice_edit.isChecked(),
                 "hud": self.hud.isChecked(),
                 "play_sounds": self.play_sounds.isChecked(),
                 "autostart": self.autostart.isChecked(),

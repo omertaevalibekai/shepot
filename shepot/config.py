@@ -46,6 +46,8 @@ DEFAULTS: dict = {
     "insert_method": "paste",      # paste (Ctrl+V) | type (SendInput) | clipboard
     "restore_clipboard": True,
     "restore_delay": 0.6,          # через сколько вернуть прежний буфер
+    # --- голосовая правка ---
+    "voice_edit": True,            # есть выделение → речь считается командой правки
     # --- скриншоты в терминал ---
     "clipshot": False,             # картинка в буфере → PNG на диске + путь в буфере
     "clipshot_dir": "",            # пусто = %TEMP%\claude-shots
