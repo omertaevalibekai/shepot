@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import audio, claude_hooks, clipshot, hotkeys, providers, secrets, startup
+from . import audio, claude_hooks, clipshot, hotkeys, jump, providers, secrets, startup
 from .polish import LANGUAGE_NAMES
 
 MODE_LABELS = [
@@ -361,6 +361,7 @@ class SettingsDialog(QDialog):
         content.addWidget(self._engine_group())
         content.addWidget(self._behaviour_group())
         content.addWidget(self._clipshot_group())
+        content.addWidget(self._windows_group())
         content.addWidget(self._claude_group())
         content.addStretch(1)
 
@@ -753,6 +754,59 @@ class SettingsDialog(QDialog):
         form.addRow("", hint)
         return box
 
+    def _windows_group(self) -> QGroupBox:
+        box = QGroupBox("Окна и проекты")
+        form = QFormLayout(box)
+
+        self.ghost = QCheckBox("Окно-призрак: Alt + колесо над окном меняет прозрачность")
+        self.ghost.setChecked(bool(self.cfg.get("ghost")))
+        self.ghost.setToolTip(
+            "Шаг 10 %. Alt + средняя кнопка возвращает 100 %. На 30 % и ниже окно\n"
+            "пропускает клики насквозь. Alt + колесо перестаёт доходить до программ\n"
+            "(например, до быстрой прокрутки в VS Code или масштаба в Photoshop)."
+        )
+        form.addRow("", self.ghost)
+
+        self.jump = QCheckBox("Прыжок в проект: поиск по папкам и запуск рабочего места")
+        self.jump.setChecked(bool(self.cfg.get("jump")))
+        self.jump.toggled.connect(self._sync_enabled)
+        form.addRow("", self.jump)
+
+        self.jump_capture = KeyCapture(self.cfg.get("jump_hotkey") or "win+j")
+        form.addRow("Клавиша прыжка", self.jump_capture)
+
+        self.jump_root = QLineEdit(self.cfg.get("jump_root") or "")
+        self.jump_root.setPlaceholderText(str(jump.default_root()))
+        form.addRow("Папка проектов", self.jump_root)
+
+        hint = QLabel(
+            "Прыжок открывает VS Code и Windows Terminal с вкладками Claude Code, Codex и сервера "
+            "(npm run dev) и ставит окна рядом; уже открытые окна проекта не дублирует. Что "
+            "открывать, отмечается галочками в самой панели (Alt + 1…5) и запоминается для "
+            "проекта. Win + P занят Windows (второй экран), поэтому по умолчанию Win + J."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888;")
+        form.addRow("", hint)
+        return box
+
+    def _jump_problem(self) -> str:
+        if not self.jump.isChecked():
+            return ""
+        text = self.jump_capture.value()
+        try:
+            binding = hotkeys.parse_binding(text)
+        except ValueError as exc:
+            return f"не получилось разобрать сочетание: {exc}"
+        if binding.raw:
+            return "для прыжка нужно сочетание с обычной клавишей, например Win + J"
+        if binding.text == hotkeys.parse_binding(self.hotkey_capture.value()).text:
+            return "совпадает с клавишей диктовки"
+        kind, message = hotkeys.assess(text)
+        if kind == "bad":
+            return message
+        return hotkeys.try_register(text) or ""
+
     # ----------------------------------------------------------- активность
     def _sync_enabled(self) -> None:
         local = self.stt_backend.currentData() == "local"
@@ -776,6 +830,10 @@ class SettingsDialog(QDialog):
         self.clipshot_dir.setEnabled(catching)
         self.clipshot_keep_days.setEnabled(catching)
 
+        jumping = self.jump.isChecked()
+        self.jump_capture.setEnabled(jumping)
+        self.jump_root.setEnabled(jumping)
+
     # -------------------------------------------------------------- сохранение
     def _accept(self) -> None:
         kind, problem = self._hotkey_problem()
@@ -783,6 +841,10 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Шёпот", f"Горячая клавиша: {problem}")
             return
         hotkey_mode = self._hotkey_mode()
+        jump_problem = self._jump_problem()
+        if jump_problem:
+            QMessageBox.warning(self, "Шёпот", f"Клавиша прыжка: {jump_problem}")
+            return
 
         vocabulary = [
             line.strip()
@@ -823,6 +885,10 @@ class SettingsDialog(QDialog):
                 "restore_delay": self.restore_delay.value(),
                 "clipshot": self.clipshot.isChecked(),
                 "claude_island": self.claude_island.isChecked(),
+                "ghost": self.ghost.isChecked(),
+                "jump": self.jump.isChecked(),
+                "jump_hotkey": self.jump_capture.value() or "win+j",
+                "jump_root": self.jump_root.text().strip(),
                 "clipshot_dir": self.clipshot_dir.text().strip(),
                 "clipshot_keep_days": self.clipshot_keep_days.value(),
                 "voice_edit": self.voice_edit.isChecked(),

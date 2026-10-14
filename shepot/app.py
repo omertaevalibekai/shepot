@@ -5,12 +5,13 @@ from __future__ import annotations
 import threading
 import time
 import winsound
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import audio, clipshot, hotkeys, inserter, learn, polish, providers, selection, stt
+from . import audio, clipshot, ghost, hotkeys, inserter, jump, learn, polish, providers, selection, stt
 from .config import Config
 from .history import History
 from .history_ui import HistoryDialog
@@ -18,6 +19,7 @@ from .hotkeys import HotkeyManager
 from . import claude_bridge
 from .claude_island import ClaudeIsland
 from .edit_panel import EditPanel
+from .jump_panel import JumpPanel
 from .hud import Hud
 from .settings_ui import MODE_LABELS, TONE_LABELS, SettingsDialog
 
@@ -93,6 +95,9 @@ class Controller(QObject):
     selectionFound = Signal(str)
     editReady = Signal(str)
     termsLearned = Signal(list)
+    requestJump = Signal()
+    jumpStep = Signal(str)
+    jumpDone = Signal(int)
 
     def __init__(self, app: QApplication) -> None:
         super().__init__()
@@ -122,6 +127,21 @@ class Controller(QObject):
         self._settings_dialog: SettingsDialog | None = None
         self._history_dialog: HistoryDialog | None = None
 
+        # прыжок в проект: своя клавиша, отдельная от диктовки
+        self.jump_keys = HotkeyManager(
+            on_press=self.requestJump.emit, on_release=lambda: None, on_cancel=lambda: None,
+        )
+        self.jump_panel = JumpPanel()
+        self.jump_panel.chosen.connect(self._jump_to)
+        self.jump_panel.optionsChanged.connect(self._jump_options)
+        self.jump_panel.pinToggled.connect(self._jump_pin)
+        self.requestJump.connect(self.open_jump)
+        self.jumpStep.connect(self._jump_progress)
+        self.jumpDone.connect(self._jump_finished)
+        self._jumping: dict | None = None
+        jump.warm_tools()                      # codex ищется около секунды — заранее
+        self.ghost = ghost.Ghost(parent=self, dictation_hud=self.hud)
+
         self.clipshot = clipshot.Watcher(self.cfg, parent=self)
         self.clipshot.captured.connect(self._report_screenshot)
 
@@ -145,9 +165,11 @@ class Controller(QObject):
 
         self._apply_hotkeys(announce=False)
         self.clipshot.set_enabled(bool(self.cfg.get("clipshot")))
+        self.ghost.set_enabled(bool(self.cfg.get("ghost")))
         # остров сессий Claude Code: мост слушает хуки на 127.0.0.1
         self.claude_bridge = claude_bridge.Bridge()
         self.claude_island = ClaudeIsland(self.claude_bridge, self.hud)
+        self.ghost.claude_island = self.claude_island
         if not self.claude_bridge.start():
             _log_edit({"claude_bridge": self.claude_bridge.error})
         self._sync_claude_island()
@@ -181,6 +203,10 @@ class Controller(QObject):
         )
         self.clipshot_action.toggled.connect(self.set_clipshot)
         menu.addAction(self.clipshot_action)
+
+        self.jump_action = QAction("Прыжок в проект…", menu)
+        self.jump_action.triggered.connect(self.open_jump)
+        menu.addAction(self.jump_action)
         menu.addSeparator()
 
         mode_menu = menu.addMenu("Режим")
@@ -283,8 +309,92 @@ class Controller(QObject):
                     None, APP_TITLE, f"Не удалось назначить горячую клавишу: {exc}"
                 )
             return False
+        finally:
+            self._apply_jump_key(announce)
         self._update_tooltip()
         return True
+
+    def _apply_jump_key(self, announce: bool) -> None:
+        if not self.cfg.get("jump"):
+            self.jump_keys.stop()
+            return
+        key = self.cfg.get("jump_hotkey") or "win+j"
+        try:
+            self.jump_keys.apply(key, "ptt", "")
+        except Exception as exc:
+            _log_edit({"jump_hotkey": str(exc)})
+            if announce:
+                QMessageBox.warning(None, APP_TITLE, f"Не удалось назначить клавишу прыжка: {exc}")
+            return
+        self.jump_action.setText(f"Прыжок в проект…\t{hotkeys.display(key)}")
+
+    # ------------------------------------------------------------ прыжок
+    def open_jump(self) -> None:
+        if self.jump_panel.isVisible():
+            self.jump_panel.close_panel()          # повторное нажатие закрывает
+            return
+        root = Path(self.cfg.get("jump_root") or str(jump.default_root()))
+        projects = jump.scan(root, self.cfg.get("jump_recent") or {}, self.cfg.get("jump_pinned") or [])
+        if not projects:
+            self._show_error(f"Нет проектов в папке {root}")
+            return
+        self.jump_panel.open(projects, self.cfg.get("jump_options") or {},
+                             self.cfg.get("jump_pinned") or [], root.name)
+
+    def _jump_options(self, key: str, options: dict) -> None:
+        saved = dict(self.cfg.get("jump_options") or {})
+        saved[key] = options
+        self._set("jump_options", saved)
+
+    def _jump_pin(self, key: str) -> None:
+        pinned = list(self.cfg.get("jump_pinned") or [])
+        if key in pinned:
+            pinned.remove(key)
+        else:
+            pinned.append(key)
+        self._set("jump_pinned", pinned)
+
+    def _jump_to(self, project, options: dict, terminal_only: bool) -> None:
+        try:
+            plan = jump.start(project, options, terminal_only,
+                              on_step=self.jumpStep.emit, on_done=self.jumpDone.emit)
+        except OSError as exc:
+            self._show_error(f"Не открылось: {exc}")
+            return
+        recent = dict(self.cfg.get("jump_recent") or {})
+        recent[str(project.path)] = time.time()
+        # помним последние 30 проектов
+        self._set("jump_recent", dict(sorted(recent.items(), key=lambda kv: kv[1])[-30:]))
+        self._jumping = {"project": project, "plan": plan, "done": set()}
+        self._jump_progress()
+
+    def _jump_progress(self, part: str = "") -> None:
+        state = self._jumping
+        if not state or not self.cfg.get("hud"):
+            return
+        if part:
+            state["done"].add(part)
+        names = {"code": "VS Code", "terminal": "терминал"}
+        steps = [names[p] + (" ✓" if p in state["done"] else " …") for p in state["plan"].parts]
+        if state["plan"].web:
+            steps.append("браузер ✓")
+        message = " · ".join([state["project"].name] + steps)
+        self.hud.show_state("processing", message)
+
+    def _jump_finished(self, count: int) -> None:
+        state, self._jumping = self._jumping, None
+        if not state or not self.cfg.get("hud"):
+            return
+        plan, project = state["plan"], state["project"]
+        if not plan.parts:
+            text = f"{project.name} · ничего не отмечено" if not plan.web else f"{project.name} · браузер"
+        elif "reuse" in (plan.editor, plan.terminal) and "new" not in (plan.editor, plan.terminal):
+            text = f"{project.name} · переключился"
+        elif count < len(plan.parts):
+            text = f"{project.name} · открываю дольше обычного"
+        else:
+            text = f"{project.name} · {count} " + ("окно готово" if count == 1 else "окна готовы")
+        self.hud.show_state("done", text, hide_after=2.4, hint=project.branch)
 
     # ------------------------------------------------------------------ поток
     def toggle_dictation(self) -> None:
@@ -554,6 +664,7 @@ class Controller(QObject):
             return
         self.cancel_dictation()
         self.hotkeys.stop()                    # чтобы поле записи клавиш не срабатывало
+        self.jump_keys.stop()
         dialog = SettingsDialog(self.cfg, focus_keys=focus_keys)
         self._settings_dialog = dialog
         accepted = dialog.exec()
@@ -579,6 +690,7 @@ class Controller(QObject):
         for action in self._tone_group.actions():
             action.setChecked(action.data() == self.cfg.get("tone"))
         self.set_clipshot(bool(self.cfg.get("clipshot")))
+        self.ghost.set_enabled(bool(self.cfg.get("ghost")))
         self._sync_claude_island()
         self._update_tooltip()
 
@@ -598,6 +710,8 @@ class Controller(QObject):
     def quit(self) -> None:
         self.clipshot.set_enabled(False)
         self.hotkeys.stop()
+        self.jump_keys.stop()
+        self.ghost.stop()                      # помощник вернёт окна непрозрачными
         self.claude_bridge.stop()
         self.recorder.close()
         self.hud.hide_now()
