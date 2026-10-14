@@ -51,6 +51,8 @@ DEFAULTS: dict = {
     "restore_delay": 0.6,          # через сколько вернуть прежний буфер
     # --- голосовая правка ---
     "voice_edit": True,            # есть выделение → речь считается командой правки
+    # --- Claude Code ---
+    "claude_island": True,         # показывать сессии Claude Code в острове (нужны хуки)
     # --- скриншоты в терминал ---
     "clipshot": False,             # картинка в буфере → PNG на диске + путь в буфере
     "clipshot_dir": "",            # пусто = %TEMP%\claude-shots

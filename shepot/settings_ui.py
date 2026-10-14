@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import audio, clipshot, hotkeys, providers, secrets, startup
+from . import audio, claude_hooks, clipshot, hotkeys, providers, secrets, startup
 from .polish import LANGUAGE_NAMES
 
 MODE_LABELS = [
@@ -361,6 +361,7 @@ class SettingsDialog(QDialog):
         content.addWidget(self._engine_group())
         content.addWidget(self._behaviour_group())
         content.addWidget(self._clipshot_group())
+        content.addWidget(self._claude_group())
         content.addStretch(1)
 
         scroll = QScrollArea()
@@ -677,6 +678,50 @@ class SettingsDialog(QDialog):
         form.addRow("", self.autostart)
         return box
 
+    def _claude_group(self) -> QGroupBox:
+        box = QGroupBox("Claude Code")
+        form = QFormLayout(box)
+        self.claude_island = QCheckBox("Показывать сессии Claude Code в острове")
+        self.claude_island.setChecked(bool(self.cfg.get("claude_island")))
+        form.addRow("", self.claude_island)
+
+        self.claude_status = QLabel()
+        self.claude_status.setWordWrap(True)
+        self.claude_connect = QPushButton()
+        self.claude_connect.clicked.connect(self._toggle_claude_hooks)
+        row = QHBoxLayout()
+        row.addWidget(self.claude_connect)
+        row.addWidget(self.claude_status, 1)
+        form.addRow("Хуки", row)
+        hint = QLabel(
+            "Подключение дописывает хуки Шёпота в ~/.claude/settings.json (рядом кладётся "
+            "резервная копия; чужие хуки не трогаются). Остров показывает, кто из сессий думает, "
+            "закончил или ждёт разрешения, а разрешение можно дать прямо в нём. Пока Шёпот "
+            "выключен, Claude Code работает как обычно, но пишет об ошибке хука — тогда отключите."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid);")
+        form.addRow("", hint)
+        self._sync_claude_hooks()
+        return box
+
+    def _sync_claude_hooks(self) -> None:
+        installed = claude_hooks.is_installed()
+        self.claude_connect.setText("Отключить от Claude Code" if installed else "Подключить к Claude Code")
+        self.claude_status.setText("Подключено. Новые сессии Claude Code видны сразу, "
+                                   "уже открытые — после перезапуска." if installed else "Не подключено.")
+
+    def _toggle_claude_hooks(self) -> None:
+        try:
+            if claude_hooks.is_installed():
+                claude_hooks.uninstall()
+            else:
+                claude_hooks.install()
+        except (OSError, ValueError) as exc:
+            self.claude_status.setText(f"Не получилось изменить настройки Claude Code: {exc}")
+            return
+        self._sync_claude_hooks()
+
     def _clipshot_group(self) -> QGroupBox:
         box = QGroupBox("Скриншоты в терминал")
         form = QFormLayout(box)
@@ -777,6 +822,7 @@ class SettingsDialog(QDialog):
                 "restore_clipboard": self.restore_clipboard.isChecked(),
                 "restore_delay": self.restore_delay.value(),
                 "clipshot": self.clipshot.isChecked(),
+                "claude_island": self.claude_island.isChecked(),
                 "clipshot_dir": self.clipshot_dir.text().strip(),
                 "clipshot_keep_days": self.clipshot_keep_days.value(),
                 "voice_edit": self.voice_edit.isChecked(),

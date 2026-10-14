@@ -15,6 +15,8 @@ from .config import Config
 from .history import History
 from .history_ui import HistoryDialog
 from .hotkeys import HotkeyManager
+from . import claude_bridge
+from .claude_island import ClaudeIsland
 from .edit_panel import EditPanel
 from .hud import Hud
 from .settings_ui import MODE_LABELS, TONE_LABELS, SettingsDialog
@@ -143,6 +145,12 @@ class Controller(QObject):
 
         self._apply_hotkeys(announce=False)
         self.clipshot.set_enabled(bool(self.cfg.get("clipshot")))
+        # остров сессий Claude Code: мост слушает хуки на 127.0.0.1
+        self.claude_bridge = claude_bridge.Bridge()
+        self.claude_island = ClaudeIsland(self.claude_bridge, self.hud)
+        if not self.claude_bridge.start():
+            _log_edit({"claude_bridge": self.claude_bridge.error})
+        self._sync_claude_island()
         self._warm_up()
         # первый запуск: без ключа диктовать нечем — сразу открываем настройки
         QTimer.singleShot(500, self._prompt_for_key_if_needed)
@@ -571,7 +579,11 @@ class Controller(QObject):
         for action in self._tone_group.actions():
             action.setChecked(action.data() == self.cfg.get("tone"))
         self.set_clipshot(bool(self.cfg.get("clipshot")))
+        self._sync_claude_island()
         self._update_tooltip()
+
+    def _sync_claude_island(self) -> None:
+        self.claude_island.enabled = bool(self.cfg.get("claude_island"))
 
     def open_history(self) -> None:
         if self._history_dialog is not None and self._history_dialog.isVisible():
@@ -586,6 +598,7 @@ class Controller(QObject):
     def quit(self) -> None:
         self.clipshot.set_enabled(False)
         self.hotkeys.stop()
+        self.claude_bridge.stop()
         self.recorder.close()
         self.hud.hide_now()
         self.tray.hide()
