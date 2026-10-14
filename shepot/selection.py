@@ -264,6 +264,37 @@ def focused_selection(trim_padding: bool = False) -> str | None:
             ole32.CoUninitialize()
 
 
+def document_text(limit: int = 200_000) -> str | None:
+    """Весь текст элемента с фокусом (поле ввода, документ) через UI Automation, без нажатий."""
+    ole32 = ctypes.windll.ole32
+    PV = ctypes.POINTER(ctypes.c_void_p)
+    initialized = ole32.CoInitializeEx(None, 2) >= 0
+    automation, element, pattern, whole = (ctypes.c_void_p() for _ in range(4))
+    try:
+        ole32.CoCreateInstance(ctypes.byref(_guid(_CLSID_CUIAutomation)), None, 1,
+                               ctypes.byref(_guid(_IID_IUIAutomation)), ctypes.byref(automation))
+        _vcall(automation, 8, ctypes.byref(element), argtypes=(PV,))          # GetFocusedElement
+        _vcall(element, 14, _UIA_TextPatternId, ctypes.byref(_guid(_IID_IUIAutomationTextPattern)),
+               ctypes.byref(pattern), argtypes=(ctypes.c_int, ctypes.POINTER(_GUID), PV))
+        if not pattern:
+            return None
+        _vcall(pattern, 7, ctypes.byref(whole), argtypes=(PV,))               # get_DocumentRange
+        bstr = ctypes.c_void_p()
+        _vcall(whole, 12, limit, ctypes.byref(bstr), argtypes=(ctypes.c_int, PV))   # GetText
+        if not bstr.value:
+            return ""
+        text = ctypes.wstring_at(bstr.value)
+        ctypes.windll.oleaut32.SysFreeString(bstr)
+        return text
+    except OSError:
+        return None
+    finally:
+        for obj in (whole, pattern, element, automation):
+            _release(obj)
+        if initialized:
+            ole32.CoUninitialize()
+
+
 def count_words(text: str) -> str:
     """«1 слово», «3 слова», «21 слово», «12 слов»."""
     n = len(text.split())

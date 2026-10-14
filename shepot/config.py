@@ -28,6 +28,9 @@ DEFAULTS: dict = {
     "source_language": "auto",     # auto | ru | en | kk | ...
     "target_language": "en",       # куда переводить в режиме translate
     "vocabulary": [],              # имена, бренды, термины
+    "latin_terms": True,           # английские слова в русской речи — латиницей
+    "learn_corrections": True,     # исправил термин после вставки → он попадает в словарь
+    "replacements": {},            # выученное «как распознал → как надо» (learn.py)
     "custom_instruction": "",      # своя добавка к промпту
     # --- распознавание речи ---
     "stt_backend": "openai",       # openai | local

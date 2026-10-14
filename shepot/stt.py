@@ -91,12 +91,27 @@ def _transcribe_local(wav: bytes, name: str, device: str,
 
 # ------------------------------------------------------------------- API ---
 
+# Без подсказки модель пишет часть терминов кириллицей («пул-реквест», «фигму»,
+# «онбординг»); с подсказкой — латиницей, но надёжно только те, что в ней названы.
+# Поэтому к общей подсказке добавляется словарь пользователя (он сам учится, см. learn.py).
+LATIN_TERMS_HINT = ("Русская речь с английскими терминами. Английские слова и названия пишутся "
+                    "латиницей, как в оригинале: deploy, pull request, Docker, GitHub, Figma, API.")
+
+
+def build_hint(cfg) -> str:
+    vocabulary = [t.strip() for t in (cfg.get("vocabulary") or []) if t.strip()]
+    if not cfg.get("latin_terms"):
+        return ", ".join(vocabulary)
+    if not vocabulary:
+        return LATIN_TERMS_HINT
+    return LATIN_TERMS_HINT + " Также: " + ", ".join(vocabulary[-80:]) + "."
+
+
 def transcribe(wav: bytes, cfg) -> str:
     """Переводит WAV-байты в текст согласно настройкам."""
     language = cfg.get("source_language") or "auto"
     language = None if language == "auto" else language
-    vocabulary = [t for t in (cfg.get("vocabulary") or []) if t.strip()]
-    hint = ", ".join(vocabulary)
+    hint = build_hint(cfg)
 
     if cfg.get("stt_backend") == "local":
         return _transcribe_local(

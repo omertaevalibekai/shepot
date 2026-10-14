@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import audio, clipshot, hotkeys, inserter, polish, providers, selection, stt
+from . import audio, clipshot, hotkeys, inserter, learn, polish, providers, selection, stt
 from .config import Config
 from .history import History
 from .history_ui import HistoryDialog
@@ -20,6 +20,11 @@ from .hud import Hud
 from .settings_ui import MODE_LABELS, TONE_LABELS, SettingsDialog
 
 APP_TITLE = "Шёпот"
+
+# когда сверять вставленный текст с окном: через 20 с и через минуту, плюс при
+# следующем нажатии горячей клавиши; дольше 10 минут вставку не помним
+LEARN_CHECKS_MS = (20_000, 60_000)
+LEARN_WINDOW_S = 600
 
 IDLE_COLOR = QColor(210, 214, 224)
 ACTIVE_COLOR = QColor(96, 205, 255)
@@ -85,6 +90,7 @@ class Controller(QObject):
     failed = Signal(str)
     selectionFound = Signal(str)
     editReady = Signal(str)
+    termsLearned = Signal(list)
 
     def __init__(self, app: QApplication) -> None:
         super().__init__()
@@ -109,6 +115,7 @@ class Controller(QObject):
         self._job_is_edit = False
         self._target_window = 0
         self._target_is_terminal = False
+        self._last_insert: tuple[int, str, float] | None = None
         self.edit_panel = EditPanel()
         self._settings_dialog: SettingsDialog | None = None
         self._history_dialog: HistoryDialog | None = None
@@ -125,6 +132,7 @@ class Controller(QObject):
         self.failed.connect(self._show_error)
         self.selectionFound.connect(self._open_edit_panel)
         self.editReady.connect(self._deliver_edit)
+        self.termsLearned.connect(self._remember_terms)
         self.edit_panel.chosen.connect(self._run_edit)
         self.edit_panel.cancelled.connect(self._edit_cancelled)
 
@@ -278,6 +286,7 @@ class Controller(QObject):
             self.start_dictation()
 
     def start_dictation(self) -> None:
+        self._check_learning()                        # до новой вставки сверяем прошлую
         if self.edit_panel.isVisible():
             self.edit_panel.cancel()                  # повторное нажатие закрывает панель правки
             return
@@ -424,6 +433,7 @@ class Controller(QObject):
         self._job_is_edit = False
         try:
             transcript = stt.transcribe(wav, snapshot)
+            transcript = learn.apply(transcript, snapshot.get("replacements") or {})
             text = polish.polish(transcript, snapshot)
         except (stt.SttError, polish.PolishError) as exc:
             self.failed.emit(str(exc))
@@ -457,11 +467,55 @@ class Controller(QObject):
                                      restore_clipboard=restore, restore_delay=delay)
             except Exception:
                 ok = False
+            if ok:
+                # запомнить, что и куда вставили: позже сверим с текстом окна
+                self._last_insert = (selection.foreground_window(), text, time.monotonic())
             self.inserted.emit(ok)
 
         threading.Thread(target=deliver, daemon=True, name="shepot-insert").start()
 
+    # ------------------------------------------------------- обучение словаря
+    def _check_learning(self) -> None:
+        """Человек поправил вставленный текст? Исправленные термины — в словарь."""
+        record = self._last_insert
+        if not record or not self.cfg.get("learn_corrections"):
+            return
+        hwnd, text, at = record
+        if time.monotonic() - at > LEARN_WINDOW_S:
+            self._last_insert = None
+            return
+        if selection.foreground_window() != hwnd:
+            return                                    # человек в другом окне — читать нечего
+
+        def work() -> None:
+            try:
+                document = selection.document_text()
+            except Exception:
+                document = None
+            if document:
+                pairs = learn.find_correction_pairs(text, document)
+                if pairs:
+                    self.termsLearned.emit(pairs)
+
+        threading.Thread(target=work, daemon=True, name="shepot-learn").start()
+
+    def _remember_terms(self, pairs: list) -> None:
+        old_pairs = dict(self.cfg.get("replacements") or {})
+        replacements = learn.remember_pairs(old_pairs, [tuple(p) for p in pairs])
+        vocabulary, added = learn.merge(list(self.cfg.get("vocabulary") or []), [p[1] for p in pairs])
+        if replacements == old_pairs and not added:
+            return                                    # это уже знали
+        self.cfg.set("replacements", replacements)
+        self._set("vocabulary", vocabulary)
+        added = added or [p[1] for p in pairs if old_pairs.get(p[0].lower()) != p[1]]
+        quiet = not (self.recorder.is_recording or self._busy or self.edit_panel.isVisible())
+        if self.cfg.get("hud") and quiet:
+            self.hud.show_state("done", "Запомнил: " + ", ".join(added), hide_after=2.2)
+
     def _report_insertion(self, delivered: bool) -> None:
+        if delivered and not self._job_is_edit:
+            for delay in LEARN_CHECKS_MS:
+                QTimer.singleShot(delay, self._check_learning)
         if self.cfg.get("hud"):
             if self._job_is_edit and delivered and self._target_is_terminal:
                 # в терминале выделен вывод, заменить его нельзя — текст встал в строку ввода

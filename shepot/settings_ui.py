@@ -543,6 +543,13 @@ class SettingsDialog(QDialog):
         _fill(self.source_language, SOURCE_LANGUAGES, self.cfg.get("source_language"))
         form.addRow("Язык речи", self.source_language)
 
+        self.latin_terms = QComboBox()
+        _fill(self.latin_terms, [(True, "Латиницей: deploy, Figma"),
+                                 (False, "Как слышатся: деплой, фигма")],
+              bool(self.cfg.get("latin_terms")))
+        self.latin_terms.setToolTip("Как писать английские слова и названия в русской речи.")
+        form.addRow("Английские слова", self.latin_terms)
+
         self.target_language = QComboBox()
         _fill(
             self.target_language,
@@ -555,6 +562,15 @@ class SettingsDialog(QDialog):
         self.vocabulary.setPlaceholderText("Одно имя, бренд или термин в строке")
         self.vocabulary.setFixedHeight(76)
         form.addRow("Словарь", self.vocabulary)
+
+        self.learn_corrections = QCheckBox("Запоминать мои исправления названий и терминов")
+        self.learn_corrections.setChecked(bool(self.cfg.get("learn_corrections")))
+        self.learn_corrections.setToolTip(
+            "Исправили «фигму» на «Figma» после вставки — слово попадёт в словарь,\n"
+            "и в следующий раз распознается правильно. Текст окна читается только\n"
+            "на этом компьютере и никуда не отправляется."
+        )
+        form.addRow("", self.learn_corrections)
 
         self.custom_instruction = QPlainTextEdit(self.cfg.get("custom_instruction") or "")
         self.custom_instruction.setPlaceholderText(
@@ -738,8 +754,15 @@ class SettingsDialog(QDialog):
                 "mode": self.mode.currentData(),
                 "tone": self.tone.currentData(),
                 "source_language": self.source_language.currentData(),
+                "latin_terms": bool(self.latin_terms.currentData()),
+                "learn_corrections": self.learn_corrections.isChecked(),
                 "target_language": self.target_language.currentData(),
                 "vocabulary": vocabulary,
+                # удалили слово из словаря — забываем и выученные замены на него
+                "replacements": {
+                    old: new for old, new in (self.cfg.get("replacements") or {}).items()
+                    if new.lower() in {term.lower() for term in vocabulary}
+                },
                 "custom_instruction": self.custom_instruction.toPlainText().strip(),
                 "stt_backend": self.stt_backend.currentData(),
                 "stt_model": self.stt_model.text().strip() or "gpt-4o-transcribe",
