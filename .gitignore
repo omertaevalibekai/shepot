@@ -5,3 +5,6 @@ dist/
 *.spec
 assets/shepot.ico
 assets/shepot.png
+
+# Локальные заметки для Claude Code
+CLAUDE.local.md
