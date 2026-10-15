@@ -22,10 +22,11 @@ from ctypes import wintypes
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QCursor, QFont, QFontMetricsF, QGuiApplication, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
-from . import ghost_hook, hud
+from . import ghost_hook
+from .island_place import PLACE
 
 CREATE_NO_WINDOW = 0x08000000
 SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE, SWP_NOMOVE = 0x0001, 0x0004, 0x0010, 0x0002
@@ -251,12 +252,11 @@ class GhostChip(QWidget):
         self.update()
 
     def place(self, lift: int) -> None:
-        screen = QGuiApplication.screenAt(QCursor.pos()) or self.screen()
-        if screen is None:
-            return
-        area = screen.availableGeometry()
-        y = area.bottom() - hud.BOTTOM_GAP - self.H - 8 - lift
-        self.move(area.x() + (area.width() - self.width()) // 2, y)
+        """На месте острова; если там остров Claude — рядом, со стороны раскрытия."""
+        center = PLACE.center()
+        if lift:
+            center.setY(center.y() + (-lift if PLACE.grows_up(center) else lift))
+        self.move(int(center.x() - self.width() / 2), int(center.y() - self.H / 2 - 8))
 
     def _button(self) -> QRectF:
         m = QFontMetricsF(self._font)

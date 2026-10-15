@@ -2,6 +2,7 @@
 
 Чёрная капсула вырастает из точки на пружине, пока идёт запись — слева лампа
 и таймер, справа волна; при обработке и готовности сжимается под надпись.
+Капсулу можно перетащить левой кнопкой (island_place.py), фокус она не берёт.
 """
 
 from __future__ import annotations
@@ -12,10 +13,12 @@ from collections import deque
 
 from PySide6.QtCore import Qt, QTimer, QRectF, QPoint, QPointF
 from PySide6.QtGui import (
-    QColor, QCursor, QFont, QFontMetricsF, QGuiApplication, QPainter, QPainterPath,
+    QColor, QFont, QFontMetricsF, QPainter, QPainterPath,
     QPen, QRadialGradient,
 )
 from PySide6.QtWidgets import QWidget
+
+from .island_place import PLACE, Dragger, no_activate
 
 BARS = 16
 CAPSULE_H = 40.0
@@ -57,7 +60,7 @@ def _animations_enabled() -> bool:
 
 
 class Hud(QWidget):
-    """Окно-остров, которое не забирает фокус и пропускает клики насквозь."""
+    """Окно-остров: не забирает фокус; капсулу можно перетащить, мимо неё клики проходят."""
 
     def __init__(self) -> None:
         super().__init__(
@@ -65,13 +68,14 @@ class Hud(QWidget):
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
             | Qt.Tool
-            | Qt.WindowDoesNotAcceptFocus
-            | Qt.WindowTransparentForInput,
+            | Qt.WindowDoesNotAcceptFocus,
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.NoFocus)
+        self.setMouseTracking(True)
         self.resize(WIDTH, HEIGHT)
+        self.drag = Dragger(self, self._capsule_rect, self._place_center)
 
         self._font = QFont("Segoe UI")
         self._font.setPointSizeF(10.5)
@@ -128,7 +132,8 @@ class Hud(QWidget):
         if appearing:
             self._width, self._velocity = (from_width or DOT_W), 0.0
             self._shown_at = now - (FADE_IN_S if from_width else 0.0)
-            self._reposition()
+            if not self.drag.busy:
+                self._reposition()
             self._motion = _animations_enabled()
         if not self.isVisible():
             self.show()
@@ -163,6 +168,9 @@ class Hud(QWidget):
 
     # ------------------------------------------------------------ внутреннее
     def _leave(self) -> None:
+        if self.drag.dragging:
+            self._hide_timer.start(400)            # держат в руке — уберём, когда отпустят
+            return
         if not self._motion:
             self._finish_hide()
             return
@@ -192,6 +200,7 @@ class Hud(QWidget):
         dt = min(0.05, max(0.0, now - self._last_tick))
         self._last_tick = now
 
+        self.drag.tick(dt)
         target = self._target_width()
         if self._motion:
             accel = STIFFNESS * (target - self._width) - DAMPING * self._velocity
@@ -212,14 +221,31 @@ class Hud(QWidget):
         self.update()
 
     def _reposition(self) -> None:
-        screen = QGuiApplication.screenAt(QCursor.pos()) or self.screen()
-        if screen is None:
-            return
-        area = screen.availableGeometry()
-        self.move(
-            area.x() + (area.width() - WIDTH) // 2,
-            area.y() + area.height() - HEIGHT - BOTTOM_GAP + PAD,
-        )
+        self._place_center(PLACE.center())
+
+    def _place_center(self, center: QPointF) -> None:
+        self.move(int(round(center.x() - WIDTH / 2)), int(round(center.y() - CAPSULE_H / 2 - PAD)))
+
+    def _capsule_rect(self) -> QRectF:
+        width = max(DOT_W, min(MAX_W, self._width))
+        return QRectF((WIDTH - width) / 2, PAD, width, CAPSULE_H)
+
+    # ------------------------------------------------------------ мышь
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        no_activate(self)
+
+    def mousePressEvent(self, event) -> None:
+        self.drag.press(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        self.drag.move(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self.drag.release(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.drag.double_click(event)
 
     def _opacity(self, now: float) -> float:
         if not self._motion:
@@ -235,13 +261,14 @@ class Hud(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setOpacity(self._opacity(now))
 
-        width = max(DOT_W, min(MAX_W, self._width))
-        rect = QRectF((WIDTH - width) / 2, PAD, width, CAPSULE_H)
+        rect = self._capsule_rect()
+        width = rect.width()
         radius = CAPSULE_H / 2
 
-        # мягкая тень: несколько расширяющихся контуров с малой прозрачностью
+        # мягкая тень: несколько расширяющихся контуров с малой прозрачностью;
+        # в руке — тень глубже, остров «приподнят»
         painter.setPen(Qt.NoPen)
-        for step in range(6, 0, -1):
+        for step in range(9 if self.drag.dragging else 6, 0, -1):
             shadow = QPainterPath()
             shadow.addRoundedRect(rect.adjusted(-step, -step + 3, step, step + 3),
                                   radius + step, radius + step)

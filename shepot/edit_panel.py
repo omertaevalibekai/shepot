@@ -7,13 +7,14 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import (
     QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
 from . import hud
+from .island_place import PLACE
 
 STYLES = (
     ("Деловой", "Перепиши в деловом стиле: вежливо, чётко и по делу, без разговорных слов."),
@@ -101,6 +102,7 @@ class EditPanel(QWidget):
         self._closing: str | None = None     # None | "chosen" | "cancelled"
         self._prompt = ""
         self._was_active = False
+        self._down = False
 
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.PreciseTimer)
@@ -113,7 +115,10 @@ class EditPanel(QWidget):
         from .selection import count_words
         self.title.setText("Переписать · " + count_words(text))
         self.field.clear()
-        self.move(anchor.x() - WIDTH // 2, anchor.y() + PAD - HEIGHT)
+        # остров у верхнего края — панель раскрывается вниз
+        self._down = not PLACE.grows_up(QPointF(anchor.x(), anchor.y() - hud.CAPSULE_H / 2))
+        top = anchor.y() - int(hud.CAPSULE_H) - PAD if self._down else anchor.y() + PAD - HEIGHT
+        self.move(anchor.x() - WIDTH // 2, top)
         motion = hud._animations_enabled()
         self._w, self._h = (start_width, hud.CAPSULE_H) if motion else (PANEL_W, PANEL_H)
         self._vw = self._vh = 0.0
@@ -208,7 +213,8 @@ class EditPanel(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         w = max(hud.DOT_W, min(PANEL_W, self._w))
         h = max(hud.CAPSULE_H, min(PANEL_H + 12, self._h))
-        rect = QRectF((WIDTH - w) / 2, PAD + PANEL_H - h, w, h)   # растёт вверх от нижнего края
+        # растёт от края, к которому прижат остров
+        rect = QRectF((WIDTH - w) / 2, PAD if self._down else PAD + PANEL_H - h, w, h)
         radius = min(RADIUS, h / 2)
 
         painter.setPen(Qt.NoPen)

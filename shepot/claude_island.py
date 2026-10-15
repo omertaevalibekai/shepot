@@ -1,7 +1,8 @@
 """Остров сессий Claude Code: статусы, запросы разрешений, «готово».
 
 Живёт там же, где остров диктовки, и уступает ему место: пока идёт запись,
-сжатый статус прячется, а карточка разрешения поднимается над ним.
+сжатый статус прячется, а карточка разрешения поднимается над ним (у верхнего
+края экрана — опускается под него). Его тоже можно перетащить левой кнопкой.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from . import hud
 from .claude_bridge import Bridge, Permission
+from .island_place import PLACE, Dragger
 
 COLORS = {"think": QColor(217, 119, 87), "wait": QColor(255, 196, 92), "ask": QColor(165, 139, 255),
           "done": QColor(48, 209, 88), "idle": QColor(110, 114, 128)}
@@ -69,6 +71,9 @@ class ClaudeIsland(QWidget):
         self._request: Permission | None = None
         self._w = self._h = hud.CAPSULE_H
         self._vw = self._vh = 0.0
+        self._down = False                 # остров у верха экрана: растём вниз
+        self.setMouseTracking(True)
+        self.drag = Dragger(self, self._rect, self._place_center)
         self._build_card()
 
         bridge.changed.connect(self._refresh)
@@ -170,8 +175,8 @@ class ClaudeIsland(QWidget):
         self.view = view
         if view == "perm":
             self._fade.setOpacity(0.0)
-            self.card.setGeometry(int((WIDTH - MAX_W) / 2), int(PAD + MAX_H - self._target()[1]),
-                                  int(MAX_W), int(self._target()[1]))
+            top = PAD if self._down else PAD + MAX_H - self._target()[1]
+            self.card.setGeometry(int((WIDTH - MAX_W) / 2), int(top), int(MAX_W), int(self._target()[1]))
             self.card.show()
         else:
             self.card.hide()
@@ -204,19 +209,19 @@ class ClaudeIsland(QWidget):
         dictating = self.hud.isVisible()
         wanted = self.view != "hidden" and not (dictating and self.view in ("compact", "list", "done"))
         if wanted and not self.isVisible():
-            anchor = self.hud.capsule_anchor()
             self._w, self._h = hud.DOT_W, hud.CAPSULE_H
-            self._place(anchor, dictating)
+            self._place(self.hud.capsule_anchor(), dictating)
             self.show()
         elif not wanted and self.isVisible():
             self.hide()
             return
         if not self.isVisible():
             return
-        if self.view == "perm":
+        dt = hud.FRAME_MS / 1000.0
+        self.drag.tick(dt)
+        if self.view == "perm" and not self.drag.busy:
             self._place(self.hud.capsule_anchor(), dictating)
         tw, th = self._target()
-        dt = hud.FRAME_MS / 1000.0
         for attr, vattr, target in (("_w", "_vw", tw), ("_h", "_vh", th)):
             v = getattr(self, vattr) + (hud.STIFFNESS * (target - getattr(self, attr))
                                         - hud.DAMPING * getattr(self, vattr)) * dt
@@ -228,13 +233,29 @@ class ClaudeIsland(QWidget):
         self.update()
 
     def _place(self, anchor: QPoint, lift: bool) -> None:
-        y = anchor.y() - (LIFT_OVER_HUD if lift else 0)
-        self.move(anchor.x() - WIDTH // 2, y + PAD - HEIGHT)
+        """anchor — середина нижнего края капсулы диктовки; lift — уступить ей место."""
+        center = QPointF(anchor.x(), anchor.y() - hud.CAPSULE_H / 2)
+        if lift:
+            up = PLACE.grows_up(center)
+            center.setY(center.y() + (-LIFT_OVER_HUD if up else LIFT_OVER_HUD))
+        self._place_center(center)
+
+    def _place_center(self, center: QPointF) -> None:
+        """Поставить окно так, чтобы центр капсулы (её «корня») был в center."""
+        self._down = not PLACE.grows_up(center)
+        if self._down:
+            top = center.y() - hud.CAPSULE_H / 2 - PAD
+        else:
+            top = center.y() + hud.CAPSULE_H / 2 - PAD - MAX_H
+        self.move(int(round(center.x() - WIDTH / 2)), int(round(top)))
+        if self.view == "perm" and self.card.isVisible():
+            top = PAD if self._down else PAD + MAX_H - self._target()[1]
+            self.card.move(self.card.x(), int(top))
 
     def _rect(self) -> QRectF:
         w = max(hud.DOT_W, min(MAX_W, self._w))
         h = max(hud.CAPSULE_H, min(MAX_H + 12, self._h))
-        return QRectF((WIDTH - w) / 2, PAD + MAX_H - h, w, h)
+        return QRectF((WIDTH - w) / 2, PAD if self._down else PAD + MAX_H - h, w, h)
 
     # ---------------------------------------------------------- рисование
     def paintEvent(self, _event) -> None:
@@ -329,12 +350,21 @@ class ClaudeIsland(QWidget):
 
     # ------------------------------------------------------------ ввод
     def mousePressEvent(self, event) -> None:
-        if not self._rect().contains(event.position()):
-            return
+        self.drag.press(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        self.drag.move(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self.drag.release(event) or not self._rect().contains(event.position()):
+            return                         # перетащили — это не щелчок
         if self.view == "compact":
             self._go("list")
         elif self.view == "list":
             self._go("compact")
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.drag.double_click(event)
 
     def keyPressEvent(self, event) -> None:
         if self.view == "perm" and event.key() in (Qt.Key_Return, Qt.Key_Enter):

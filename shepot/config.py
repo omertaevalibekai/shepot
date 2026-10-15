@@ -67,6 +67,7 @@ DEFAULTS: dict = {
     "clipshot_keep_days": 7,       # через сколько дней убирать старые снимки
     # --- интерфейс ---
     "hud": True,
+    "island_place": {},            # куда перетащили остров: монитор → доли рабочей области
     "play_sounds": True,
     "history_limit": 200,
     "autostart": False,

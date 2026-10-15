@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import audio, clipshot, ghost, hotkeys, inserter, jump, learn, polish, providers, selection, stt
+from . import audio, clipshot, ghost, hotkeys, inserter, island_place, jump, learn, polish, providers, selection, stt
 from .config import Config
 from .history import History
 from .history_ui import HistoryDialog
@@ -103,6 +103,7 @@ class Controller(QObject):
         super().__init__()
         self.app = app
         self.cfg = Config()
+        island_place.PLACE.bind(self.cfg)          # остров помнит, куда его перетащили
         self.history = History(int(self.cfg.get("history_limit")))
         self.hud = Hud()
         self.recorder = audio.Recorder(
