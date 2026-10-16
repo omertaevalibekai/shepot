@@ -9,7 +9,7 @@ not a raw transcript. Works in any app that has a text field.
 *Shepot* (Шёпот) is Russian for "whisper". The interface is in Russian;
 dictation works in ~99 languages.
 
-<img src="docs/img/hud.png" alt="Shepot HUD: listening, processing, inserted" width="720">
+<img src="docs/img/demo.gif" alt="Shepot island: recording with a live wave, processing, inserted" width="720">
 
 ## Features
 
@@ -18,12 +18,18 @@ dictation works in ~99 languages.
 | **Modes** | `Clean` removes "uhm"s, stumbles and repeats and adds punctuation. `As is` gives the raw transcript. `Translate` lets you speak one language and inserts another |
 | **Tone** | Keep my style / Neutral / Casual / Business |
 | **Dictionary** | Names, brands and terms that are always spelled the same way |
+| **Learns from corrections** | Fix "фигма" to "Figma" after insertion, and next time it's recognized right |
+| **Rewrite selection** | Select text and press the hotkey: Business, Friendly, Shorter, or your own request |
 | **Custom rule** | Free-form addition to the prompt ("use formal address", "no emoji") |
 | **Languages** | Recognition of ~99 languages with auto-detection, translation into 20 languages from a list |
 | **Hotkeys** | Any key, key combo, a lone right Ctrl/Alt or a mouse button; toggle, push-to-talk, or two separate keys for start and stop; `Esc` cancels |
 | **Engines** | OpenAI cloud or local faster-whisper with no internet |
 | **Insertion** | Via the clipboard, by simulated typing, or copy only |
 | **History** | Recent dictations, in case the text didn't make it to the window |
+| **Island** | A black capsule at the bottom of the screen; drag it anywhere, it snaps to magnets |
+| **Claude Code** | The island shows what your Claude Code sessions are doing and lets you approve commands |
+| **Ghost windows** | `Alt` + wheel over any window changes its opacity; at 30% and below clicks pass through |
+| **Project jump** | `Win+J` finds a project and opens its workspace: VS Code, Claude Code, Codex, dev server |
 | **Screenshots to terminal** | A toggle that turns a clipboard image into a path to a PNG, so `Ctrl+V` works where an image can't be pasted |
 
 <table>
@@ -187,6 +193,115 @@ button. "Two keys" mode puts start and stop on separate buttons. Shepot
 intercepts key combos; lone modifiers and mouse buttons are still seen by
 other programs. If a combo is already taken, the settings tell you right away.
 
+## The island
+
+While you dictate, a black capsule grows out of a dot at the bottom of the
+screen: an amber lamp, a timer and a live audio wave, then "Обрабатываю"
+(processing) and "Вставлено" (inserted). It never takes focus away from the
+window you're typing into.
+
+Drag the island with the left mouse button. Release it near a magnet (bottom
+or top centre, the four corners) or throw it towards one, and it springs
+there; otherwise it stays where you dropped it. Double-click returns it to the
+bottom centre. The position is remembered per monitor.
+
+## Rewriting selected text
+
+Select text in any window and press the dictation hotkey. Instead of recording,
+the island expands into a small panel with three styles, **Business**,
+**Friendly** and **Shorter** (keys `1`–`3`), and a field for your own request
+("make it a bulleted list", "translate to German"). The rewrite replaces the
+selection; `Ctrl+Z` undoes it.
+
+- The selection is read through UI Automation first, with no keystrokes;
+  `Ctrl+C` is the fallback, and the clipboard is restored right after.
+- Terminals never get `Ctrl+C`, since it would interrupt the running program.
+  Windows Terminal is read through UI Automation only, and the result goes to
+  the input line. In VS Code, Cursor and JetBrains IDEs rewriting is skipped.
+- If text cleanup is off, rewriting still uses OpenAI.
+
+Turn it off under Settings → "Правка выделенного текста по горячей клавише".
+
+## Learning your terms
+
+Mixed speech, such as Russian with English terms, often comes back in the
+wrong script ("пул-реквест", "фигму"). Shepot handles this in two ways:
+
+- Transcription gets a hint that English words are written in Latin script,
+  plus your dictionary. The "English words" setting switches between Latin
+  (default) and "as heard".
+- After inserting, Shepot reads the window text through UI Automation (no
+  keystrokes) after 20 s, after 60 s and on the next hotkey press, and compares
+  it with what it inserted. Words you replaced with a term (Latin or
+  capitalised) go to the dictionary, and the exact "heard → wanted" pair is
+  applied to later transcripts. The island says "Запомнил: Figma" (learned).
+
+Grammar fixes and rephrasing are not learned, only terms. The window text is
+read locally and never leaves your computer. Removing a word from the
+dictionary also forgets its replacements.
+
+## Claude Code in the island
+
+If you use [Claude Code](https://claude.com/claude-code), the island shows what
+your sessions are doing: who is thinking (with a timer), who has finished, and
+who is waiting for permission. Click the capsule to list every session with its
+current action.
+
+When Claude Code asks for permission, a card with the command and **Allow /
+Deny / Always** buttons ("Разрешить / Отказать / Всегда так") appears (`Enter` and `Esc` once the card is clicked).
+If there's no answer within 60 s, Claude Code asks in the terminal as usual.
+
+To connect, open Settings → "Claude Code" → "Подключить к Claude Code"
+(connect). This adds Shepot's hooks to `~/.claude/settings.json`, keeping a
+backup next to it and leaving other hooks alone; "Отключить" removes them.
+Hooks talk to a local server on `127.0.0.1:47821`, and requests without
+Shepot's secret token are rejected, so a web page can't fake events. While
+Shepot isn't running, Claude Code works as usual but reports a hook error;
+disconnect if that bothers you.
+
+## Ghost windows
+
+`Alt` + mouse wheel over any window changes its opacity in 10% steps;
+`Alt` + middle button restores 100%. At 30% and below, clicks pass through the
+window, so you can read a document through it and work in the window behind.
+
+A scale appears at the cursor while you scroll, each ghost window gets a label
+with its opacity, click-through windows get a dashed frame, and a capsule at
+the bottom of the screen offers "Вернуть все" (restore all). Hold `Alt` over
+a ghost window to peek: it turns solid until you let go.
+
+The wheel is caught by a low-level hook in a small helper process, so
+`Alt` + wheel no longer reaches other programs (e.g. fast scrolling in VS Code
+or zoom in Photoshop). Turn it off in Settings → "Окна и проекты".
+
+## Project jump
+
+`Win+J` opens a search over your project folders (by default
+`Desktop\AI Projects`). Each project shows its git branch, uncommitted files,
+unpushed commits, the last commit, and whether it's already open or its dev
+server is running.
+
+`Enter` opens the workspace: VS Code and a Windows Terminal with tabs for
+Claude Code, Codex and the dev server (`npm run dev`), placed side by side.
+Windows that are already open are switched to, not duplicated. Tick what to
+open right in the panel (`Alt+1…5`); the choice is remembered per project.
+`Shift+Enter` opens just a terminal, `Ctrl+P` pins a project to the top.
+
+What to open is guessed from the folder contents. You can refine it with a
+`.jump.toml` file in the project:
+
+```toml
+name    = "Shepot"               # display name
+aliases = ["шепот", "dictation"]
+open    = ["claude", "code"]     # ticked by default
+dev     = "npm run dev"          # dev server, as a terminal tab
+url     = "http://localhost:5173"
+app     = "dist/Shepot/Shepot.exe"
+```
+
+The hotkey and the projects folder are set in Settings → "Окна и проекты".
+`Win+P` is taken by Windows (second screen), hence `Win+J`.
+
 ## Screenshots to terminal
 
 A console won't accept an image from the clipboard: `Ctrl+V` in a terminal
@@ -286,6 +401,11 @@ change the model string in the same field.
   finishes. In cloud mode audio is sent to OpenAI; in local mode it never
   leaves the machine. History stores text only, in
   `%APPDATA%\Shepot\history.json`.
+- **Window text stays local.** Rewriting and term learning read text from
+  other windows through UI Automation. It's processed on your machine; only
+  the selection you ask to rewrite is sent to the text model.
+  `%APPDATA%\Shepot\edit.log` records which window and method were used,
+  never the text itself.
 
 ## Project layout
 
@@ -300,8 +420,20 @@ shepot/
   inserter.py      text delivery: clipboard or SendInput
   clipshot.py      clipboard image → PNG on disk → path in clipboard
   hotkeys.py       global hotkeys
-  hud.py           always-on-top indicator
+  hud.py           the island: recording state and audio level
+  island_place.py  where the island sits, dragging and magnets
+  selection.py     reading the selected text of the active window
+  edit_panel.py    the rewrite panel: styles and a custom request
+  learn.py         dictionary that learns from your corrections
+  claude_bridge.py local HTTP server for Claude Code hooks, session list
+  claude_hooks.py  connecting / disconnecting hooks in ~/.claude/settings.json
+  claude_island.py Claude Code sessions and permission cards in the island
+  ghost.py         ghost windows: labels, scale, "restore all"
+  ghost_hook.py    helper process with the low-level mouse hook
+  jump.py          project jump: scanning projects, opening the workspace
+  jump_panel.py    project jump window
   settings_ui.py   settings window
+  history.py       dictation history storage
   history_ui.py    history window
   resources.py     access to assets/ from source and from the .exe
   startup.py       autostart via the registry
@@ -311,4 +443,9 @@ tools/
   make_icon.py         draws assets/shepot.ico
   create_shortcuts.py  desktop and Start menu shortcuts
   build_exe.py         builds a standalone Shepot.exe
+tests/                 pytest: python -m pytest
 ```
+
+## License
+
+[MIT](LICENSE)
