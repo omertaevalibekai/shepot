@@ -26,6 +26,9 @@ dictation works in ~99 languages.
 | **Engines** | OpenAI cloud or local faster-whisper with no internet |
 | **Insertion** | Via the clipboard, by simulated typing, or copy only |
 | **History** | Recent dictations, in case the text didn't make it to the window |
+| **Live transcription** | Long dictation is cut at pauses and transcribed while you speak, so the text lands almost as soon as you stop |
+| **Window context** | Names and terms from the window you dictate into are spelled right the first time |
+| **Stats** | Words dictated, time saved, streak, a 30-day chart; copy it as a picture to share |
 | **Island** | A black capsule at the bottom of the screen; drag it anywhere, it snaps to magnets |
 | **Claude Code** | The island shows what your Claude Code sessions are doing and lets you approve commands |
 | **Ghost windows** | `Alt` + wheel over any window changes its opacity; at 30% and below clicks pass through |
@@ -355,6 +358,12 @@ Author's measurements, 10 seconds of speech, cloud mode:
 API connections are opened at app startup and whenever settings change;
 without that, the first dictation would take 9–10 seconds longer because of
 the TLS handshake.
+
+With live transcription on, a long dictation is sent in pieces while you speak
+(cut at pauses, at least 4 seconds each), and after you stop only the last
+piece is left. On 38 seconds of synthesized speech (TTS, not a live voice) the
+wait for the transcript after stopping dropped from 2.7 s to 0.8–0.9 s with the
+same text. Short dictations are transcribed in one go as before.
 
 ## Local mode
 

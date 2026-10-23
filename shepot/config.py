@@ -30,6 +30,8 @@ DEFAULTS: dict = {
     "vocabulary": [],              # имена, бренды, термины
     "latin_terms": True,           # английские слова в русской речи — латиницей
     "learn_corrections": True,     # исправил термин после вставки → он попадает в словарь
+    "live_transcribe": True,       # длинная диктовка распознаётся кусками, пока человек говорит
+    "window_context": True,        # имена и текст из окна — подсказка распознаванию и чистке
     "replacements": {},            # выученное «как распознал → как надо» (learn.py)
     "custom_instruction": "",      # своя добавка к промпту
     # --- распознавание речи ---
@@ -71,6 +73,8 @@ DEFAULTS: dict = {
     "play_sounds": True,
     "history_limit": 200,
     "autostart": False,
+    "check_updates": True,         # раз в сутки спрашивать GitHub о новой версии
+    "update_notified": "",         # о какой версии уже сказали всплывашкой
 }
 
 

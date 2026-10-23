@@ -574,6 +574,23 @@ class SettingsDialog(QDialog):
         )
         form.addRow("", self.learn_corrections)
 
+        self.window_context = QCheckBox("Учитывать текст окна, куда диктую")
+        self.window_context.setChecked(bool(self.cfg.get("window_context")))
+        self.window_context.setToolTip(
+            "Заголовок окна и текст поля уходят модели вместе с диктовкой: так имена\n"
+            "и термины из переписки пишутся правильно с первого раза. Из терминалов,\n"
+            "редакторов кода и менеджеров паролей текст не читается никогда."
+        )
+        form.addRow("", self.window_context)
+
+        self.live_transcribe = QCheckBox("Распознавать длинную диктовку по ходу речи")
+        self.live_transcribe.setChecked(bool(self.cfg.get("live_transcribe")))
+        self.live_transcribe.setToolTip(
+            "Запись режется по паузам и распознаётся кусками, пока вы говорите,\n"
+            "поэтому после второго нажатия текст появляется почти сразу."
+        )
+        form.addRow("", self.live_transcribe)
+
         self.custom_instruction = QPlainTextEdit(self.cfg.get("custom_instruction") or "")
         self.custom_instruction.setPlaceholderText(
             "Например: всегда обращайся на «вы», не используй эмодзи"
@@ -677,6 +694,11 @@ class SettingsDialog(QDialog):
         self.autostart = QCheckBox("Запускать вместе с Windows")
         self.autostart.setChecked(startup.is_enabled())
         form.addRow("", self.autostart)
+
+        self.check_updates = QCheckBox("Сообщать о новых версиях")
+        self.check_updates.setChecked(bool(self.cfg.get("check_updates")))
+        self.check_updates.setToolTip("Раз в сутки Шёпот спрашивает GitHub о последнем релизе")
+        form.addRow("", self.check_updates)
         return box
 
     def _claude_group(self) -> QGroupBox:
@@ -886,12 +908,15 @@ class SettingsDialog(QDialog):
                 "clipshot": self.clipshot.isChecked(),
                 "claude_island": self.claude_island.isChecked(),
                 "ghost": self.ghost.isChecked(),
+                "check_updates": self.check_updates.isChecked(),
                 "jump": self.jump.isChecked(),
                 "jump_hotkey": self.jump_capture.value() or "win+j",
                 "jump_root": self.jump_root.text().strip(),
                 "clipshot_dir": self.clipshot_dir.text().strip(),
                 "clipshot_keep_days": self.clipshot_keep_days.value(),
                 "voice_edit": self.voice_edit.isChecked(),
+                "window_context": self.window_context.isChecked(),
+                "live_transcribe": self.live_transcribe.isChecked(),
                 "hud": self.hud.isChecked(),
                 "play_sounds": self.play_sounds.isChecked(),
                 "autostart": self.autostart.isChecked(),

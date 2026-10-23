@@ -7,14 +7,20 @@ import time
 import winsound
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QObject, Qt, QRectF, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QAction, QActionGroup, QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap,
+)
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import audio, clipshot, ghost, hotkeys, inserter, island_place, jump, learn, polish, providers, selection, stt
+from . import (
+    audio, clipshot, ghost, hotkeys, inserter, island_place, jump, learn, polish, providers,
+    context, live, selection, stats, stt, updates,
+)
 from .config import Config
 from .history import History
 from .history_ui import HistoryDialog
+from .stats_ui import StatsDialog
 from .hotkeys import HotkeyManager
 from . import claude_bridge
 from .claude_island import ClaudeIsland
@@ -105,6 +111,7 @@ class Controller(QObject):
         self.cfg = Config()
         island_place.PLACE.bind(self.cfg)          # остров помнит, куда его перетащили
         self.history = History(int(self.cfg.get("history_limit")))
+        self.stats = stats.Stats(history_items=self.history.items())
         self.hud = Hud()
         self.recorder = audio.Recorder(
             on_level=self.levelChanged.emit,
@@ -123,10 +130,16 @@ class Controller(QObject):
         self._job_is_edit = False
         self._target_window = 0
         self._target_is_terminal = False
+        self._target_app = ""
+        # одна диктовка: распознавание на лету и контекст окна (ждём, пока прочитается)
+        self._live: live.LiveTranscriber | None = None
+        self._ctx: tuple[dict, threading.Event] = ({"ctx": context.WindowContext()}, threading.Event())
+        self._stopped_at = 0.0
         self._last_insert: tuple[int, str, float] | None = None
         self.edit_panel = EditPanel()
         self._settings_dialog: SettingsDialog | None = None
         self._history_dialog: HistoryDialog | None = None
+        self._stats_dialog: StatsDialog | None = None
 
         # прыжок в проект: своя клавиша, отдельная от диктовки
         self.jump_keys = HotkeyManager(
@@ -174,6 +187,9 @@ class Controller(QObject):
         if not self.claude_bridge.start():
             _log_edit({"claude_bridge": self.claude_bridge.error})
         self._sync_claude_island()
+        self.updates = updates.Checker(parent=self)
+        self.updates.found.connect(self._update_found)
+        self.updates.set_enabled(bool(self.cfg.get("check_updates")))
         self._warm_up()
         # первый запуск: без ключа диктовать нечем — сразу открываем настройки
         QTimer.singleShot(500, self._prompt_for_key_if_needed)
@@ -192,6 +208,13 @@ class Controller(QObject):
     # ------------------------------------------------------------------ трей
     def _build_menu(self) -> None:
         menu = QMenu()
+
+        # пункт появляется, только когда на GitHub есть версия новее
+        self.update_action = QAction("", menu)
+        self.update_action.setVisible(False)
+        self.update_action.triggered.connect(self._open_update)
+        menu.addAction(self.update_action)
+        self._update_url = updates.RELEASES_URL
 
         self.dictate_action = QAction("Начать диктовку", menu)
         self.dictate_action.triggered.connect(self.toggle_dictation)
@@ -233,6 +256,10 @@ class Controller(QObject):
             tone_menu.addAction(action)
 
         menu.addSeparator()
+        stats_action = QAction("Статистика…", menu)
+        stats_action.triggered.connect(self.open_stats)
+        menu.addAction(stats_action)
+
         history_action = QAction("История…", menu)
         history_action.triggered.connect(self.open_history)
         menu.addAction(history_action)
@@ -288,6 +315,19 @@ class Controller(QObject):
         if changed and self.cfg.get("hud"):
             message = "Скриншоты в терминал" if enabled else "Перехват скриншотов выключен"
             self.hud.show_state("done", message, hide_after=1.4)
+
+    def _update_found(self, version: str, url: str) -> None:
+        self._update_url = url
+        self.update_action.setText(f"Скачать версию {version}")
+        self.update_action.setVisible(True)
+        if self.cfg.get("update_notified") != version:        # всплывашка — один раз на версию
+            self.cfg.set("update_notified", version)
+            self.cfg.save()
+            self.tray.showMessage(APP_TITLE, f"Вышла версия {version}. Скачать — в меню значка.",
+                                  QSystemTrayIcon.Information, 6000)
+
+    def _open_update(self) -> None:
+        QDesktopServices.openUrl(QUrl(self._update_url))
 
     def _report_screenshot(self, _path: str) -> None:
         if self.cfg.get("hud"):
@@ -417,12 +457,15 @@ class Controller(QObject):
             return
         # окно, в котором человек работал: в него вернём фокус и вставим правку
         self._target_window = selection.foreground_window()
-        self._target_is_terminal = selection.is_terminal(selection.foreground_app())
+        self._target_app = selection.foreground_app()
+        self._target_is_terminal = selection.is_terminal(self._target_app)
+        self._begin_live()                            # до записи: иначе первые блоки пройдут мимо
         started = self.recorder.start(
             device_index=self.cfg.get("input_device"),
             max_seconds=float(self.cfg.get("max_seconds")),
         )
         if not started:
+            self._drop_live()
             return
         self.tray.setIcon(make_icon(ACTIVE_COLOR))
         if self.cfg.get("play_sounds"):
@@ -436,6 +479,44 @@ class Controller(QObject):
             self._selection_ready.clear()
             threading.Thread(target=self._grab_selection, daemon=True,
                              name="shepot-selection").start()
+
+    def _begin_live(self) -> None:
+        """Контекст окна читается в фоне; длинная запись распознаётся кусками по ходу."""
+        snapshot = _Snapshot(self.cfg.as_dict())
+        holder, ready = {"ctx": context.WindowContext()}, threading.Event()
+        self._ctx = (holder, ready)
+        if snapshot.get("window_context"):
+            app, hwnd = self._target_app, self._target_window
+
+            def grab() -> None:
+                try:
+                    holder["ctx"] = context.capture(app, hwnd)
+                except Exception:
+                    pass
+                finally:
+                    ready.set()
+
+            threading.Thread(target=grab, daemon=True, name="shepot-context").start()
+        else:
+            ready.set()
+
+        self._live = None
+        if snapshot.get("live_transcribe"):
+            base = stt.build_hint(snapshot)
+
+            def transcribe(wav: bytes, previous: str) -> str:
+                ready.wait(1.0)
+                return stt.transcribe(wav, snapshot,
+                                      hint=context.stt_hint(base, holder["ctx"], previous))
+
+            self._live = live.LiveTranscriber(transcribe)
+        self.recorder.on_block = self._live.feed if self._live else None
+
+    def _drop_live(self) -> None:
+        self.recorder.on_block = None
+        current, self._live = self._live, None
+        if current is not None:
+            current.cancel()
 
     def _grab_selection(self) -> None:
         try:
@@ -453,6 +534,7 @@ class Controller(QObject):
         if self.recorder.is_recording:
             self.recorder.cancel()
             self.hotkeys.notify_stopped()
+        self._drop_live()
         self._busy = False                            # короткое удержание уже ушло в _process — он отступит
         self.tray.setIcon(make_icon(IDLE_COLOR))
         anchor = self.hud.capsule_anchor()
@@ -500,6 +582,8 @@ class Controller(QObject):
                                      restore_clipboard=restore, restore_delay=delay)
             except Exception:
                 ok = False
+            if ok:
+                self.stats.record(stats.count_words(text), app=self._target_app, edit=True)
             self.inserted.emit(ok)
 
         threading.Thread(target=deliver, daemon=True, name="shepot-insert").start()
@@ -511,6 +595,9 @@ class Controller(QObject):
         if not self.recorder.is_recording:
             return
         wav = self.recorder.stop()
+        self._stopped_at = time.monotonic()
+        self.recorder.on_block = None
+        live_job, self._live = self._live, None
         self.hotkeys.notify_stopped()
         self.tray.setIcon(make_icon(BUSY_COLOR))
         if self.cfg.get("play_sounds"):
@@ -518,11 +605,15 @@ class Controller(QObject):
 
         error = self.recorder.error
         if error:
+            if live_job is not None:
+                live_job.cancel()
             self._show_error(f"Микрофон недоступен: {error}")
             return
 
         seconds = _wav_seconds(wav)
         if seconds < float(self.cfg.get("min_seconds")):
+            if live_job is not None:
+                live_job.cancel()
             self.tray.setIcon(make_icon(IDLE_COLOR))
             if self._selection_ready.is_set() and not self._selection:
                 self.hud.hide_now()                   # иначе остров вот-вот уступит место панели
@@ -532,7 +623,7 @@ class Controller(QObject):
         if self.cfg.get("hud"):
             self.hud.show_state("processing")
         threading.Thread(
-            target=self._process, args=(wav, seconds), daemon=True,
+            target=self._process, args=(wav, seconds, live_job, self._ctx), daemon=True,
             name="shepot-pipeline",
         ).start()
 
@@ -540,20 +631,30 @@ class Controller(QObject):
         if not self.recorder.is_recording:
             return
         self.recorder.cancel()
+        self._drop_live()
         self.hotkeys.notify_stopped()
         self.tray.setIcon(make_icon(IDLE_COLOR))
         self.hud.hide_now()
 
-    def _process(self, wav: bytes, seconds: float) -> None:
+    def _process(self, wav: bytes, seconds: float, live_job, ctx) -> None:
         snapshot = _Snapshot(self.cfg.as_dict())
         self._selection_ready.wait(1.0)               # очень короткая запись: выделение ещё в пути
         if self._selection:
+            if live_job is not None:
+                live_job.cancel()
             return                                    # это была правка: ею занимается панель
         self._job_is_edit = False
+        holder, ready = ctx
         try:
-            transcript = stt.transcribe(wav, snapshot)
+            # куски уже распознаны по ходу речи; не вышло или запись короткая — целиком
+            transcript = live_job.finish() if live_job is not None else None
+            ready.wait(1.0)
+            window = holder["ctx"]
+            if transcript is None:
+                hint = context.stt_hint(stt.build_hint(snapshot), window)
+                transcript = stt.transcribe(wav, snapshot, hint=hint)
             transcript = learn.apply(transcript, snapshot.get("replacements") or {})
-            text = polish.polish(transcript, snapshot)
+            text = polish.polish(transcript, snapshot, context.polish_note(window))
         except (stt.SttError, polish.PolishError) as exc:
             self.failed.emit(str(exc))
             return
@@ -589,6 +690,8 @@ class Controller(QObject):
             if ok:
                 # запомнить, что и куда вставили: позже сверим с текстом окна
                 self._last_insert = (selection.foreground_window(), text, time.monotonic())
+                self.stats.record(stats.count_words(text), seconds,
+                                  wait=time.monotonic() - self._stopped_at, app=self._target_app)
             self.inserted.emit(ok)
 
         threading.Thread(target=deliver, daemon=True, name="shepot-insert").start()
@@ -692,11 +795,22 @@ class Controller(QObject):
             action.setChecked(action.data() == self.cfg.get("tone"))
         self.set_clipshot(bool(self.cfg.get("clipshot")))
         self.ghost.set_enabled(bool(self.cfg.get("ghost")))
+        self.updates.set_enabled(bool(self.cfg.get("check_updates")))
         self._sync_claude_island()
         self._update_tooltip()
 
     def _sync_claude_island(self) -> None:
         self.claude_island.enabled = bool(self.cfg.get("claude_island"))
+
+    def open_stats(self) -> None:
+        if self._stats_dialog is not None and self._stats_dialog.isVisible():
+            self._stats_dialog.raise_()
+            self._stats_dialog.activateWindow()
+            return
+        dialog = StatsDialog(self.stats)
+        self._stats_dialog = dialog
+        dialog.exec()
+        self._stats_dialog = None
 
     def open_history(self) -> None:
         if self._history_dialog is not None and self._history_dialog.isVisible():

@@ -54,6 +54,7 @@ class Recorder:
         self._frames: list[bytes] = []
         self._recording = False
         self._error: str | None = None
+        self.on_block = None              # (pcm, громкость) на каждый блок — для распознавания на лету
 
     # ------------------------------------------------------------- свойства
     @property
@@ -141,8 +142,15 @@ class Recorder:
                 with self._lock:
                     self._frames.append(data)
                 read += 1
+                level = _rms(data)
                 if self._on_level is not None:
-                    self._on_level(_rms(data))
+                    self._on_level(level)
+                on_block = self.on_block
+                if on_block is not None:
+                    try:
+                        on_block(data, level)
+                    except Exception:
+                        self.on_block = None      # сломался — запись важнее, дальше без него
                 if read >= max_chunks:
                     # дошли до лимита — просим контроллер завершить расшифровку
                     if self._on_auto_stop is not None:

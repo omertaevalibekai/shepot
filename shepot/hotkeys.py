@@ -36,7 +36,7 @@ WM_INPUT = 0x00FF
 WM_APP_COMMAND = 0x8001
 PM_REMOVE = 0x0001
 QS_ALLINPUT = 0x04FF
-MAPVK_VSC_TO_VK_EX = 3
+
 HWND_MESSAGE = wintypes.HWND(-3)
 
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
@@ -59,6 +59,7 @@ NAMED_KEYS = {
     "home": 0x24, "end": 0x23, "page up": 0x21, "pgup": 0x21, "page down": 0x22, "pgdown": 0x22,
     "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
     "pause": 0x13, "caps lock": 0x14, "scroll lock": 0x91, "print screen": 0x2C, "menu": 0x5D,
+    "num lock": 0x90, "browser back": 0xA6, "browser forward": 0xA7,
     "`": 0xC0, "-": 0xBD, "=": 0xBB, "[": 0xDB, "]": 0xDD, "\\": 0xDC,
     ";": 0xBA, "'": 0xDE, ",": 0xBC, ".": 0xBE, "/": 0xBF,
     "num *": 0x6A, "num +": 0x6B, "num -": 0x6D, "num .": 0x6E, "num /": 0x6F,
@@ -140,7 +141,8 @@ user32.PeekMessageW.argtypes = [
     ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT,
 ]
 user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
-user32.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
+user32.VkKeyScanW.argtypes = [wintypes.WCHAR]
+user32.VkKeyScanW.restype = ctypes.c_short
 user32.CreateWindowExW.argtypes = [
     wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
     ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -185,15 +187,12 @@ def _key_vk(name: str) -> int | None:
         except ValueError:
             return None
         return value if 0 < value < 0xFF else None
-    try:
-        # всё остальное — через раскладку: имя → скан-код → виртуальная клавиша
-        import keyboard
-
-        scan = keyboard.key_to_scan_codes(name)[0]
-        vk = user32.MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX)
-        return vk or None
-    except Exception:
-        return None
+    if len(name) == 1:
+        # остальные символы — через текущую раскладку (буквы кириллицы, «ä» и т. п.)
+        result = user32.VkKeyScanW(name)
+        vk = result & 0xFF
+        return vk if result != -1 and vk not in (0, 0xFF) else None
+    return None
 
 
 def parse_binding(text: str) -> Binding:
