@@ -28,6 +28,8 @@ import time
 from ctypes import wintypes
 from dataclasses import dataclass
 
+from .i18n import t
+
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -199,24 +201,24 @@ def parse_binding(text: str) -> Binding:
     """'ctrl+space' / 'right ctrl' / 'mouse forward' → Binding. ValueError, если не разобрать."""
     clean = (text or "").strip().lower()
     if not clean:
-        raise ValueError("пустое сочетание")
+        raise ValueError(t("пустое сочетание"))
     if clean in SIDE_KEYS:
         return Binding(clean, "key", vk=SIDE_KEYS[clean])
     if clean in MOUSE_BUTTONS:
         return Binding(clean, "mouse", vk=MOUSE_VK[clean])
     parts = [p.strip() for p in clean.split("+") if p.strip()]
     if not parts:
-        raise ValueError("пустое сочетание")
+        raise ValueError(t("пустое сочетание"))
     if parts[-1] in MODIFIERS:
-        raise ValueError("нужна основная клавиша, одних модификаторов мало")
+        raise ValueError(t("нужна основная клавиша, одних модификаторов мало"))
     mods = 0
     for part in parts[:-1]:
         if part not in MODIFIERS:
-            raise ValueError(f"неизвестный модификатор {part!r}")
+            raise ValueError(t("неизвестный модификатор {key}", key=repr(part)))
         mods |= MODIFIERS[part]
     vk = _key_vk(parts[-1])
     if vk is None:
-        raise ValueError(f"неизвестная клавиша {parts[-1]!r}")
+        raise ValueError(t("неизвестная клавиша {key}", key=repr(parts[-1])))
     return Binding("+".join(parts), "reg", mods=mods, vk=vk)
 
 
@@ -224,7 +226,7 @@ def parse(hotkey: str) -> tuple[int, int]:
     """Совместимость: (модификаторы, клавиша) для сочетаний RegisterHotKey."""
     binding = parse_binding(hotkey)
     if binding.raw:
-        raise ValueError("это не сочетание для RegisterHotKey")
+        raise ValueError(t("это не сочетание для RegisterHotKey"))
     return binding.mods, binding.vk
 
 
@@ -261,12 +263,12 @@ def display_parts(text: str) -> list[str]:
     if not clean:
         return []
     if clean in _RU and ("+" not in clean):
-        return [_RU[clean]]
+        return [t(_RU[clean])]
     out = []
     for part in clean.split("+"):
         part = part.strip()
         if part in _RU:
-            out.append(_RU[part])
+            out.append(t(_RU[part]))
         elif len(part) == 1:
             out.append(part.upper())
         elif part.startswith("f") and part[1:].isdigit():
@@ -285,24 +287,24 @@ def assess(text: str, other: str | None = None) -> tuple[str, str]:
     try:
         binding = parse_binding(text)
     except ValueError as exc:
-        return "bad", f"Не получилось разобрать сочетание: {exc}."
+        return "bad", t("Не получилось разобрать сочетание: {error}.", error=exc)
     name = display(text)
     if other and parse_binding(other).text == binding.text:
-        return "bad", "Старт и стоп на одной клавише — это режим «Переключатель». Выберите разные клавиши."
+        return "bad", t("Старт и стоп на одной клавише — это режим «Переключатель». Выберите разные клавиши.")
     if binding.kind == "reg":
         if binding.mods & MOD_WIN and binding.vk == ord("L"):
-            return "bad", "Win + L Windows забирает себе (блокировка экрана). Выберите другое."
+            return "bad", t("Win + L Windows забирает себе (блокировка экрана). Выберите другое.")
         if binding.mods == 0 and binding.vk in TYPING_VKS:
-            return "bad", f"«{name}» без Ctrl или Alt срабатывала бы при обычном наборе текста. Добавьте модификатор."
+            return "bad", t("«{key}» без Ctrl или Alt срабатывала бы при обычном наборе текста. Добавьте модификатор.", key=name)
         if binding.mods == MOD_CONTROL and binding.vk in COMMON_CTRL:
-            return "warn", f"{name} — стандартное сочетание во многих программах. Шёпот перехватит его, и там оно перестанет работать."
-        return "ok", f"Готово. {name} перехватывается Шёпотом и в активное окно не попадёт."
+            return "warn", t("{key} — стандартное сочетание во многих программах. Шёпот перехватит его, и там оно перестанет работать.", key=name)
+        return "ok", t("Готово. {key} перехватывается Шёпотом и в активное окно не попадёт.", key=name)
     if binding.text == "mouse back":
-        return "warn", "Кнопку «назад» браузер тоже получит и уйдёт на прошлую страницу. Удобнее «вперёд» или средняя."
+        return "warn", t("Кнопку «назад» браузер тоже получит и уйдёт на прошлую страницу. Удобнее «вперёд» или средняя.")
     if binding.text in ("left win", "right win"):
-        return "warn", "Одиночный Win ещё и открывает меню «Пуск». Лучше правый Ctrl или правый Alt."
-    return "ok", (f"Готово. {name} слушается напрямую: работает при любой нагрузке, "
-                  "другие программы клавишу тоже видят.")
+        return "warn", t("Одиночный Win ещё и открывает меню «Пуск». Лучше правый Ctrl или правый Alt.")
+    return "ok", t("Готово. {key} слушается напрямую: работает при любой нагрузке, "
+                    "другие программы клавишу тоже видят.", key=name)
 
 
 def try_register(text: str) -> str | None:
@@ -317,8 +319,8 @@ def try_register(text: str) -> str | None:
     if not user32.RegisterHotKey(None, probe_id, binding.mods | MOD_NOREPEAT, binding.vk):
         code = ctypes.get_last_error()
         if code == 1409:                          # ERROR_HOTKEY_ALREADY_REGISTERED
-            return f"{display(text)} уже занято другой программой — выберите другое."
-        return f"Windows не приняла {display(text)} (код {code})."
+            return t("{key} уже занято другой программой — выберите другое.", key=display(text))
+        return t("Windows не приняла {key} (код {code}).", key=display(text), code=code)
     user32.UnregisterHotKey(None, probe_id)
     return None
 
@@ -381,10 +383,10 @@ class HotkeyManager:
         bindings = {"main": parse_binding(hotkey)}
         if mode == "pair":
             if not stop_hotkey:
-                raise ValueError("для режима «Две клавиши» нужна клавиша остановки")
+                raise ValueError(t("для режима «Две клавиши» нужна клавиша остановки"))
             bindings["stop"] = parse_binding(stop_hotkey)
             if bindings["stop"].text == bindings["main"].text:
-                raise ValueError("клавиши старта и остановки должны различаться")
+                raise ValueError(t("клавиши старта и остановки должны различаться"))
         cancel_vk = 0
         if cancel_key:
             try:
@@ -405,7 +407,7 @@ class HotkeyManager:
         self._commands.put((command, done, result))
         user32.PostThreadMessageW(self._thread_id, WM_APP_COMMAND, 0, 0)
         if not done.wait(3):
-            return "поток горячих клавиш не отвечает"
+            return t("поток горячих клавиш не отвечает")
         return result[0]
 
     # -------------------------------------------------------- поток менеджера
@@ -462,13 +464,13 @@ class HotkeyManager:
                 code = ctypes.get_last_error()
                 self._clear()
                 if code == 1409:                  # ERROR_HOTKEY_ALREADY_REGISTERED
-                    return f"сочетание {display(binding.text)} уже занято другой программой — выберите другое"
-                return f"Windows не приняла сочетание {display(binding.text)} (код {code})"
+                    return t("сочетание {key} уже занято другой программой — выберите другое", key=display(binding.text))
+                return t("Windows не приняла сочетание {key} (код {code})", key=display(binding.text), code=code)
             self._registered.append(HOTKEY_IDS[slot])
         if any(b.raw for b in bindings.values()):
             if not self._raw_input(True):
                 self._clear()
-                return f"Windows не дала слушать клавиатуру и мышь (код {ctypes.get_last_error()})"
+                return t("Windows не дала слушать клавиатуру и мышь (код {code})", code=ctypes.get_last_error())
         self._mode, self._bindings, self._cancel_vk = mode, bindings, cancel_vk
         self._cancel_was_down = _down(cancel_vk) if cancel_vk else False
         return None

@@ -19,6 +19,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget
 
 from .island_place import PLACE, Dragger, no_activate
+from .i18n import t
 
 BARS = 16
 CAPSULE_H = 40.0
@@ -197,7 +198,7 @@ class Hud(QWidget):
         return min(MAX_W, max(150.0, width))
 
     def _label(self) -> str:
-        return self._message or LABELS.get(self._state, "")
+        return self._message or t(LABELS.get(self._state, ""))
 
     def _tick(self) -> None:
         now = time.monotonic()

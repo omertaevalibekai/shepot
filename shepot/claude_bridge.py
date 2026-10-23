@@ -24,6 +24,7 @@ from PySide6.QtCore import QObject, Signal
 
 from . import claude_reply
 from .config import CONFIG_DIR
+from .i18n import t
 
 PORT = 47821
 TOKEN_FILE = CONFIG_DIR / "claude_token"
@@ -142,7 +143,7 @@ class Bridge(QObject):
         try:
             self._server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         except OSError as exc:
-            self.error = f"Порт {port} занят: {exc}"
+            self.error = t("Порт {port} занят: {error}", port=port, error=exc)
             return False
         self._server.daemon_threads = True
         threading.Thread(target=self._server.serve_forever, daemon=True,
@@ -183,7 +184,7 @@ class Bridge(QObject):
         if event == "SessionStart":
             pass
         elif event == "UserPromptSubmit":
-            self._set(s, "think", "думает", restart=True)
+            self._set(s, "think", t("думает"), restart=True)
             self._close_pending(sid)
         elif event == "PreToolUse":
             self._set(s, "think", _action(p.get("tool_name", ""), p.get("tool_input")))
@@ -194,11 +195,11 @@ class Bridge(QObject):
         elif event == "Notification":
             kind = p.get("notification_type")
             if kind == "idle_prompt":
-                self._set(s, "ask", "ждёт ответа")
+                self._set(s, "ask", t("ждёт ответа"))
             elif kind == "permission_prompt" and s.state != "wait":
-                self._set(s, "wait", "ждёт разрешения в терминале")
+                self._set(s, "wait", t("ждёт разрешения в терминале"))
         elif event == "Stop":
-            self._set(s, "done", "готово")
+            self._set(s, "done", t("готово"))
             self._close_pending(sid)
             line = " ".join((p.get("last_assistant_message") or "").split())
             self.finished.emit(s.name, line)
@@ -218,7 +219,7 @@ class Bridge(QObject):
                              p.get("permission_suggestions") or [])
         with self._lock:
             self.pending.append(request)
-        self._set(s, "wait", "ждёт разрешения")
+        self._set(s, "wait", t("ждёт разрешения"))
         self.changed.emit()
         self.permissionAsked.emit(request)
         request.done.wait(DECISION_WAIT_S)
@@ -240,7 +241,7 @@ class Bridge(QObject):
             if always and request.suggestions:
                 decision["updatedPermissions"] = request.suggestions
         else:
-            decision = {"behavior": "deny", "message": "Пользователь отказал в острове Шёпота."}
+            decision = {"behavior": "deny", "message": "The user denied this in the Shepot island."}
         request.decision = decision
         request.done.set()
 
@@ -267,7 +268,7 @@ class Bridge(QObject):
 
     def replied(self, s: Session) -> None:
         """Ответ ушёл в терминал: сессия снова думает (UserPromptSubmit подтвердит)."""
-        self._set(s, "think", "думает", restart=True)
+        self._set(s, "think", t("думает"), restart=True)
         s.updated = time.monotonic()
         self.changed.emit()
 
@@ -285,5 +286,5 @@ def _action(tool: str, data) -> str:
     names = {"Read": "читает", "Edit": "правит", "Write": "пишет", "Bash": "запускает",
              "Grep": "ищет", "Glob": "ищет файлы", "WebFetch": "читает страницу",
              "WebSearch": "ищет в сети", "Task": "запустил агента", "Agent": "запустил агента"}
-    verb = names.get(tool, tool)
+    verb = t(names[tool]) if tool in names else tool
     return f"{verb} {detail}".strip() if detail else verb

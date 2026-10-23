@@ -15,11 +15,12 @@ from PySide6.QtWidgets import (
 
 from . import hud
 from .island_place import PLACE
+from .i18n import t
 
 STYLES = (
-    ("Деловой", "Перепиши в деловом стиле: вежливо, чётко и по делу, без разговорных слов."),
-    ("Дружелюбный", "Перепиши тепло и дружелюбно, но по делу и без лишних слов."),
-    ("Короче", "Сократи текст, сохранив смысл, все факты, цифры и имена."),
+    ("Деловой", "Rewrite in a business style: polite, clear and to the point, no colloquialisms."),
+    ("Дружелюбный", "Rewrite warmly and in a friendly way, but to the point and without filler."),
+    ("Короче", "Make the text shorter, keeping the meaning and every fact, number and name."),
 )
 
 PANEL_W, PANEL_H = 430.0, 140.0
@@ -69,7 +70,7 @@ class EditPanel(QWidget):
         title_font.setPointSizeF(10.5)
         title_font.setWeight(QFont.DemiBold)
         self.title.setFont(title_font)
-        hint = QLabel("1–3 или свой текст · Esc", objectName="hint")
+        hint = QLabel(t("1–3 или свой текст · Esc"), objectName="hint")
         top = QHBoxLayout()
         top.setContentsMargins(20, 0, 0, 0)             # место под лампу
         top.addWidget(self.title, 1)
@@ -78,16 +79,16 @@ class EditPanel(QWidget):
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
         for index, (label, prompt) in enumerate(STYLES, start=1):
-            button = QPushButton(label)
+            button = QPushButton(t(label))
             button.setFocusPolicy(Qt.NoFocus)
             button.setCursor(Qt.PointingHandCursor)
-            button.setToolTip(f"Клавиша {index}")
+            button.setToolTip(t("Клавиша {n}", n=index))
             button.clicked.connect(lambda _=False, p=prompt: self.choose(p))
             buttons.addWidget(button)
         buttons.addStretch(1)
 
         self.field = QLineEdit()
-        self.field.setPlaceholderText("Или напишите, как изменить, и нажмите Enter")
+        self.field.setPlaceholderText(t("Или напишите, как изменить, и нажмите Enter"))
         self.field.returnPressed.connect(self._choose_typed)
 
         column = QVBoxLayout(self._body)
@@ -113,7 +114,7 @@ class EditPanel(QWidget):
     def open(self, text: str, anchor: QPoint, start_width: float) -> None:
         """Развернуться из капсулы шириной start_width; anchor — середина её нижнего края."""
         from .selection import count_words
-        self.title.setText("Переписать · " + count_words(text))
+        self.title.setText(t("Переписать") + " · " + count_words(text))
         self.field.clear()
         # остров у верхнего края — панель раскрывается вниз
         self._down = not PLACE.grows_up(QPointF(anchor.x(), anchor.y() - hud.CAPSULE_H / 2))

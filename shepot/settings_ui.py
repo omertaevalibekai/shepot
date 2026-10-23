@@ -1,69 +1,50 @@
-"""Окно настроек."""
+"""Окно настроек в духе iOS: разделы слева, группы-карточки справа.
+
+Значения читаются из виджетов только в _accept: окно закрывается кнопкой
+«Готово», крестиком или Esc — и всё сохраняется (как в настройках iPhone).
+Смена языка сохраняет введённое и пересобирает окно уже на новом языке.
+"""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
-from PySide6.QtGui import QKeySequence
+from PySide6.QtCore import QRectF, Qt, QThread, Signal
+from PySide6.QtGui import QFont, QPainter
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QDoubleSpinBox,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPlainTextEdit,
-    QButtonGroup,
-    QPushButton,
-    QScrollArea,
-    QSpinBox,
-    QVBoxLayout,
-    QWidget,
+    QComboBox, QDialog, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QScrollArea, QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from . import audio, claude_hooks, clipshot, hotkeys, jump, providers, secrets, startup
+from . import __version__, audio, claude_hooks, clipshot, hotkeys, i18n, ios, jump, logo, providers, secrets, startup
+from .i18n import t
 from .polish import LANGUAGE_NAMES
 
-MODE_LABELS = [
-    ("clean", "Чистовик — убрать «эээ», поправить пунктуацию"),
-    ("raw", "Как есть — сырая расшифровка без обработки"),
-    ("translate", "Перевод — говорю на одном, вставляется на другом"),
-]
 
-TONE_LABELS = [
-    ("preserve", "Сохранить мою манеру"),
-    ("neutral", "Нейтральный"),
-    ("casual", "Разговорный"),
-    ("formal", "Деловой"),
-]
+def mode_labels() -> list[tuple[str, str]]:
+    return [("clean", t("Чистовик")), ("raw", t("Как есть")), ("translate", t("Перевод"))]
 
-SOURCE_LANGUAGES = [("auto", "Определять автоматически")] + [
-    (code, name) for code, name in sorted(LANGUAGE_NAMES.items(), key=lambda p: p[1])
-]
 
-STT_BACKENDS = [
-    ("openai", "Облако OpenAI — быстрее и точнее"),
-    ("local", "Локально (faster-whisper) — без интернета"),
-]
+def tone_labels() -> list[tuple[str, str]]:
+    return [("preserve", t("Моя манера")), ("neutral", t("Нейтральный")),
+            ("casual", t("Разговорный")), ("formal", t("Деловой"))]
+
 
 LOCAL_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
-LOCAL_DEVICES = [("auto", "Автоматически"), ("cuda", "Видеокарта (CUDA)"), ("cpu", "Процессор")]
 
-LLM_PROVIDERS = [
-    ("openai", "OpenAI"),
-    ("anthropic", "Anthropic (Claude)"),
-    ("none", "Без обработки"),
-]
-
-INSERT_METHODS = [
-    ("paste", "Через буфер обмена (Ctrl+V) — быстро"),
-    ("type", "Набором с клавиатуры — не трогает буфер"),
-    ("clipboard", "Только скопировать, вставлю сам"),
-]
+# значки разделов: команды в квадрате 24×24 (см. ios.draw_icon)
+ICONS = {
+    "general": "C 12 12 3; M 12 2.5 L 12 5.5; M 12 18.5 L 12 21.5; M 2.5 12 L 5.5 12; M 18.5 12 L 21.5 12;"
+               " M 5.3 5.3 L 7.4 7.4; M 16.6 16.6 L 18.7 18.7; M 5.3 18.7 L 7.4 16.6; M 16.6 7.4 L 18.7 5.3",
+    "keys": "M 3 6 L 21 6 L 21 18 L 3 18 Z; M 7 14 L 17 14; M 7 10 L 7.2 10; M 11 10 L 11.2 10; M 15 10 L 15.2 10",
+    "text": "M 5 7 L 5 5 L 19 5 L 19 7; M 12 5 L 12 19; M 9 19 L 15 19",
+    "engine": "M 3.5 11 L 3.5 13; M 7.5 8.5 L 7.5 15.5; M 11.5 5 L 11.5 19; M 15.5 8 L 15.5 16; M 19.5 10.5 L 19.5 13.5",
+    "insert": "M 9 4 L 15 4; M 9 20 L 15 20; M 12 4 L 12 20",
+    "claude": "M 12 3 L 13.8 8.2 L 19 10 L 13.8 11.8 L 12 17 L 10.2 11.8 L 5 10 L 10.2 8.2 Z",
+    "windows": "M 4 5 L 11 5 L 11 11 L 4 11 Z; M 13 5 L 20 5 L 20 11 L 13 11 Z;"
+               " M 4 13 L 11 13 L 11 19 L 4 19 Z; M 13 13 L 20 13 L 20 19 L 13 19 Z",
+    "shots": "M 4 8 L 4 5 L 7 5; M 17 5 L 20 5 L 20 8; M 20 16 L 20 19 L 17 19; M 7 19 L 4 19 L 4 16; M 9 12 L 15 12",
+}
+COLORS = {"general": "#8E8E93", "keys": "#FF9F0A", "text": "#0A84FF", "engine": "#BF5AF2",
+          "insert": "#34C759", "claude": "#D97757", "windows": "#5E5CE6", "shots": "#30B0C7"}
 
 
 # Скан-коды модификаторов (с битом расширенной клавиши 0x100): только по ним
@@ -95,7 +76,7 @@ def _vk_name(vk: int) -> str:
 
 
 class KeyCapture(QPushButton):
-    """Кнопка записи привязки: нажал на неё — она ждёт клавишу или кнопку мыши.
+    """Поле клавиши: нажал на него — оно ждёт клавишу или кнопку мыши.
 
     Сочетание фиксируется, когда отпущены все клавиши: так одиночный
     модификатор (правый Ctrl) тоже можно назначить. Esc без других клавиш
@@ -103,7 +84,6 @@ class KeyCapture(QPushButton):
     """
 
     changed = Signal(str)
-    PLACEHOLDER = "Нажмите, чтобы назначить"
 
     def __init__(self, value: str = "", parent=None) -> None:
         super().__init__(parent)
@@ -112,7 +92,8 @@ class KeyCapture(QPushButton):
         self._held: list[str] = []
         self._peak: list[str] = []
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(48)
+        self.setFixedHeight(36)
+        self.setMinimumWidth(150)
         self.setFocusPolicy(Qt.StrongFocus)
         self.clicked.connect(self._start)
         self._refresh()
@@ -125,25 +106,21 @@ class KeyCapture(QPushButton):
         self._refresh()
         self.changed.emit(value)
 
-    # ------------------------------------------------------------- состояние
     def _refresh(self) -> None:
         if self._listening:
-            self.setText("●  Нажмите клавишу или кнопку мыши…   Esc — отмена")
+            self.setText(t("Нажмите сочетание…  Esc — отмена"))
             self.setStyleSheet(
-                "QPushButton { text-align: left; padding: 10px 14px; border-radius: 10px;"
-                " border: 2px solid #d6333f; background: rgba(214,51,63,0.10); color: #d6333f;"
-                " font-weight: 600; }"
+                f"QPushButton {{ padding: 0 14px; border-radius: 9px; border: 1.5px solid {ios.ACCENT};"
+                f" background: #EAF2FF; color: {ios.ACCENT_TEXT}; font-family: '{ios.FONT}'; font-size: 10pt; }}"
             )
             return
-        shown = hotkeys.display(self._value) if self._value else self.PLACEHOLDER
-        self.setText(shown)
+        self.setText("  +  ".join(hotkeys.display_parts(self._value)) if self._value else t("Назначить"))
         self.setStyleSheet(
-            "QPushButton { text-align: left; padding: 10px 14px; border-radius: 10px;"
-            " border: 2px dashed rgba(140,150,160,0.75); background: rgba(127,127,127,0.08);"
-            f" font-family: 'Cascadia Mono', Consolas, monospace; font-size: 14px;"
+            f"QPushButton {{ padding: 0 14px; border-radius: 9px; border: 1.5px solid transparent;"
+            f" background: #F2F2F7; color: {ios.INK}; font-family: '{ios.FONT}'; font-size: 10pt;"
             f" font-weight: {'600' if self._value else '400'}; }}"
-            " QPushButton:hover { border-color: #2f6fdf; }"
-            " QPushButton:focus { border-color: #2f6fdf; }"
+            f"QPushButton:hover, QPushButton:focus {{ border-color: {ios.ACCENT}; }}"
+            "QPushButton:disabled { color: #A0A0A6; }"
         )
 
     def _start(self) -> None:
@@ -165,7 +142,6 @@ class KeyCapture(QPushButton):
             self.changed.emit(value)
         self._refresh()
 
-    # ------------------------------------------------------------- события
     def _ident(self, event) -> str:
         scan, vk = event.nativeScanCode(), event.nativeVirtualKey()
         if scan in _SIDE_BY_SCAN:
@@ -232,22 +208,6 @@ class KeyCapture(QPushButton):
         return "+".join(generic + [keys[-1]])
 
 
-class ModeCard(QPushButton):
-    """Карточка режима: название и одна строка пояснения."""
-
-    def __init__(self, title: str, hint: str, parent=None) -> None:
-        super().__init__(f"{title}\n{hint}", parent)
-        self.setCheckable(True)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumHeight(64)
-        self.setStyleSheet(
-            "QPushButton { text-align: left; padding: 10px 12px; border-radius: 10px;"
-            " border: 2px solid rgba(140,150,160,0.45); background: rgba(127,127,127,0.06); }"
-            " QPushButton:hover { border-color: rgba(140,150,160,0.9); }"
-            " QPushButton:checked { border-color: #2f6fdf; background: rgba(47,111,223,0.14); }"
-        )
-
-
 class _CheckThread(QThread):
     """Проверка ключа живым запросом — в отдельном потоке, чтобы окно не висло."""
 
@@ -267,61 +227,58 @@ class _CheckThread(QThread):
 
 
 class KeyField(QWidget):
-    """Поле ввода API-ключа со скрытым текстом и кнопкой проверки."""
+    """Ключ API в строке: скрытое поле, глазок, «Проверить» и метка результата."""
 
     def __init__(self, name: str, checker, placeholder: str, parent=None) -> None:
         super().__init__(parent)
         self.name = name
         self._checker = checker
         self._thread: _CheckThread | None = None
+        self.row: ios.Row | None = None              # строка, где показать текст ошибки
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        row = QHBoxLayout()
+        line = QHBoxLayout(self)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
         self.edit = QLineEdit()
         self.edit.setEchoMode(QLineEdit.Password)
         self.edit.setText(secrets.stored(name))
         if not self.edit.text() and secrets.is_from_environment(name):
-            self.edit.setPlaceholderText(
-                f"Взят из переменной среды: {secrets.masked(name)}"
-            )
+            self.edit.setPlaceholderText(t("из переменной среды"))
         else:
             self.edit.setPlaceholderText(placeholder)
+        self.edit.setFixedWidth(190)
+        self.edit.setStyleSheet(
+            "QLineEdit { border: 0; border-radius: 8px; background: #F2F2F7; padding: 6px 10px;"
+            " font-family: Consolas, monospace; font-size: 10pt; color: #3A3A3F; }"
+            f"QLineEdit:focus {{ background: #FFFFFF; border: 1.5px solid {ios.ACCENT}; }}")
         self.edit.textEdited.connect(lambda: self._say("", None))
-        row.addWidget(self.edit, 1)
+        line.addWidget(self.edit)
 
-        self.reveal = QPushButton("Показать")
+        self.reveal = ios.pill_button(t("Показать"))
         self.reveal.setCheckable(True)
-        self.reveal.setFixedWidth(88)
         self.reveal.toggled.connect(self._toggle_reveal)
-        row.addWidget(self.reveal)
+        line.addWidget(self.reveal)
 
-        self.check_button = QPushButton("Проверить")
-        self.check_button.setFixedWidth(96)
+        self.check_button = ios.pill_button(t("Проверить"))
         self.check_button.clicked.connect(self._check)
-        row.addWidget(self.check_button)
-        layout.addLayout(row)
-
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        line.addWidget(self.check_button)
+        self.status = ios.badge("", "")
+        line.addWidget(self.status)
 
     def value(self) -> str:
         return self.edit.text().strip()
 
     def _toggle_reveal(self, shown: bool) -> None:
         self.edit.setEchoMode(QLineEdit.Normal if shown else QLineEdit.Password)
-        self.reveal.setText("Скрыть" if shown else "Показать")
+        self.reveal.setText(t("Скрыть") if shown else t("Показать"))
 
     def _check(self) -> None:
         key = self.value() or secrets.get(self.name)
         if not key:
-            self._say("Сначала вставьте ключ.", False)
+            self._say(t("Сначала вставьте ключ."), False)
             return
         self.check_button.setEnabled(False)
-        self._say("Проверяю…", None)
+        self._say(t("Проверяю…"), None)
         self._thread = _CheckThread(self._checker, key, self)
         self._thread.done.connect(self._checked)
         self._thread.start()
@@ -331,175 +288,504 @@ class KeyField(QWidget):
         self._say(message, ok)
 
     def _say(self, message: str, ok: bool | None) -> None:
-        color = {True: "#4caf78", False: "#e06a6a", None: "#888"}[ok]
-        self.status.setStyleSheet(f"color: {color};")
-        self.status.setText(message)
+        if ok is None:
+            ios.set_badge(self.status, message, "")
+        else:
+            ios.set_badge(self.status, t("Работает") if ok else t("Ошибка"), "ok" if ok else "bad")
+        if self.row is not None:
+            self.row.subtitle.setText(message if ok is not None else self.row.property("hint") or "")
+            self.row.subtitle.setVisible(bool(self.row.subtitle.text()))
+            if ok is False:
+                self.row.subtitle.setStyleSheet("color: #B42318; background: transparent;")
+            else:
+                self.row.subtitle.setStyleSheet(f"color: {ios.MUTED}; background: transparent;")
 
 
-def _fill(combo: QComboBox, pairs, current) -> None:
-    for value, label in pairs:
-        combo.addItem(label, value)
+class LogoMark(QWidget):
+    def __init__(self, size: int = 46, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        logo.draw(p, QRectF(self.rect()))
+
+
+def _combo(pairs, current, width: int = 220) -> QComboBox:
+    combo = ios.ValueCombo()
+    for value, text in pairs:
+        combo.addItem(text, value)
     index = combo.findData(current)
     combo.setCurrentIndex(index if index >= 0 else 0)
+    ios.flat(combo, width)
+    return combo
+
+
+def _line(text: str, placeholder: str = "", width: int = 240) -> QLineEdit:
+    edit = QLineEdit(text or "")
+    edit.setPlaceholderText(placeholder)
+    ios.flat(edit, width)
+    return edit
+
+
+class Page(QScrollArea):
+    """Раздел справа: большой заголовок, строка пояснения, группы."""
+
+    def __init__(self, title: str, lead: str) -> None:
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setStyleSheet(f"QScrollArea {{ background: {ios.BG}; border: 0; }}"
+                           "QScrollBar:vertical { width: 10px; background: transparent; margin: 4px 2px; }"
+                           "QScrollBar::handle:vertical { background: #C7C7CC; border-radius: 3px; min-height: 30px; }"
+                           "QScrollBar::add-line, QScrollBar::sub-line { height: 0; }")
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {ios.BG};")
+        outer = QHBoxLayout(inner)
+        outer.setContentsMargins(36, 28, 36, 36)
+        column = QWidget()
+        column.setMaximumWidth(660)
+        self.body = QVBoxLayout(column)
+        self.body.setContentsMargins(0, 0, 0, 0)
+        self.body.setSpacing(24)
+        head = QVBoxLayout()
+        head.setSpacing(6)
+        head.addWidget(ios.label(title, 22, ios.INK, QFont.Bold))
+        head.addWidget(ios.label(lead, 10.5, ios.MUTED, wrap=True))
+        self.body.addLayout(head)
+        outer.addStretch(1)
+        outer.addWidget(column, 100)
+        outer.addStretch(1)
+        self.setWidget(inner)
+        self.row_titles: list[str] = []
+
+    def group(self, title: str = "", footer: str = "") -> ios.Group:
+        g = ios.Group(title, footer)
+        if title:
+            self.row_titles.append(title)                # поиск находит раздел и по названию группы
+        self.body.addWidget(g)
+        return g
+
+    def finish(self) -> None:
+        self.body.addStretch(1)
 
 
 class SettingsDialog(QDialog):
     def __init__(self, cfg, parent=None, focus_keys: bool = False) -> None:
         super().__init__(parent)
         self.cfg = cfg
-        self.setWindowTitle("Шёпот — настройки")
-        self.setMinimumWidth(640)
-
-        # окно высокое — прячем содержимое в прокрутку, чтобы влезало на любой экран
-        inner = QWidget()
-        content = QVBoxLayout(inner)
-        content.setContentsMargins(4, 4, 12, 4)
-        keys_group = self._keys_group()
-        content.addWidget(keys_group)
-        content.addWidget(self._hotkey_group())
-        content.addWidget(self._text_group())
-        content.addWidget(self._engine_group())
-        content.addWidget(self._behaviour_group())
-        content.addWidget(self._clipshot_group())
-        content.addWidget(self._windows_group())
-        content.addWidget(self._claude_group())
-        content.addStretch(1)
-
-        scroll = QScrollArea()
-        scroll.setWidget(inner)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(scroll, 1)
-
+        self.setWindowTitle(t("Шёпот — настройки"))
+        self.setStyleSheet(f"QDialog {{ background: {ios.BG}; }} QToolTip {{ color: {ios.INK}; }}")
+        self.setMinimumSize(900, 600)
         screen = self.screen().availableGeometry() if self.screen() else None
-        height = min(940, int(screen.height() * 0.86)) if screen else 860
-        self.resize(660, height)
-
+        self.resize(1040, min(760, int(screen.height() * 0.88)) if screen else 760)
+        self._root = QHBoxLayout(self)
+        self._root.setContentsMargins(0, 0, 0, 0)
+        self._root.setSpacing(0)
+        self._closing = False
+        self._build("general")
         if focus_keys:
             self.openai_key.edit.setFocus()
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Save).setText("Сохранить")
-        buttons.button(QDialogButtonBox.Cancel).setText("Отмена")
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+    # ---------------------------------------------------------------- каркас
+    def _build(self, section: str) -> None:
+        while self._root.count():
+            item = self._root.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.setWindowTitle(t("Шёпот — настройки"))
 
-        self._sync_enabled()
+        self.stack = QStackedWidget()
+        self.pages: dict[str, Page] = {}
+        self.nav: dict[str, ios.NavButton] = {}
+        sections = [
+            ("general", t("Основное"), t("Язык, ключи доступа к моделям и то, как Шёпот ведёт себя на компьютере."), self._general),
+            ("keys", t("Горячие клавиши"), t("Любая клавиша, сочетание, одиночный правый Ctrl или боковая кнопка мыши."), self._hotkeys),
+            ("text", t("Текст"), t("Что модель делает с расшифровкой, прежде чем текст попадёт в окно."), self._text),
+            ("engine", t("Распознавание"), t("Где ваш голос превращается в текст и какая модель его чистит."), self._engine),
+            ("insert", t("Вставка"), t("Как готовый текст попадает в окно, где стоит курсор."), self._insert),
+            ("claude", "Claude Code", t("Остров показывает, что делают сессии, и даёт ответить им, не открывая терминал."), self._claude),
+            ("windows", t("Окна и проекты"), t("Прозрачные окна и быстрый переход к проекту."), self._windows),
+            ("shots", t("Скриншоты"), t("Чтобы Ctrl+V вставлял путь к снимку там, где картинку не вставить."), self._shots),
+        ]
+        for key, title, lead, build in sections:
+            page = Page(title, lead)
+            build(page)
+            page.finish()
+            self.pages[key] = page
+            self.stack.addWidget(page)
 
-    # --------------------------------------------------------------- секции
-    def _keys_group(self) -> QGroupBox:
-        box = QGroupBox("Ключи API")
-        form = QFormLayout(box)
+        self._root.addWidget(self._sidebar(sections))
+        self._root.addWidget(self.stack, 1)
+        self._sync()
+        self._open(section if section in self.pages else "general")
 
-        self.openai_key = KeyField(
-            secrets.OPENAI, providers.check_openai, "sk-…"
-        )
-        form.addRow("OpenAI", self.openai_key)
+    def _sidebar(self, sections) -> QWidget:
+        side = QFrame()
+        side.setObjectName("side")
+        side.setFixedWidth(290)
+        side.setStyleSheet(f"#side {{ background: {ios.SIDEBAR}; border-right: 1px solid #E1E1E6; }}")
+        col = QVBoxLayout(side)
+        col.setContentsMargins(14, 22, 14, 16)
+        col.setSpacing(14)
 
-        self.anthropic_key = KeyField(
-            secrets.ANTHROPIC, providers.check_anthropic, "sk-ant-… (необязательно)"
-        )
-        form.addRow("Anthropic", self.anthropic_key)
+        head = QFrame()
+        head.setObjectName("head")
+        head.setStyleSheet("#head { background: #FFFFFF; border-radius: 14px; }")
+        row = QHBoxLayout(head)
+        row.setContentsMargins(12, 12, 12, 12)
+        row.setSpacing(12)
+        row.addWidget(LogoMark(46))
+        texts = QVBoxLayout()
+        texts.setSpacing(2)
+        texts.addWidget(ios.label(t("Шёпот"), 12.5, ios.INK, QFont.DemiBold))
+        key_state = t("ключ подключён") if secrets.get(secrets.OPENAI) else t("нет ключа OpenAI")
+        texts.addWidget(ios.label(t("Версия {v}", v=__version__) + " · " + key_state, 9, ios.MUTED))
+        row.addLayout(texts, 1)
+        col.addWidget(head)
 
-        hint = QLabel(
-            "Ключ OpenAI нужен для облачного распознавания и чистки текста — "
-            "взять на platform.openai.com/api-keys. Anthropic нужен, только если "
-            "выбрать Claude для обработки текста.\n"
-            "Ключи шифруются средствами Windows под вашей учётной записью и "
-            "хранятся в %APPDATA%\\Shepot."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888;")
-        form.addRow("", hint)
-        return box
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(t("Поиск"))
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedHeight(36)
+        self.search.setStyleSheet(
+            "QLineEdit { border: 0; border-radius: 10px; background: #E6E6EB; padding: 0 12px;"
+            f" font-family: '{ios.FONT}'; font-size: 10.5pt; color: {ios.INK}; }}")
+        self.search.textChanged.connect(self._filter)
+        col.addWidget(self.search)
 
-    def _hotkey_group(self) -> QGroupBox:
-        box = QGroupBox("Горячие клавиши")
-        layout = QVBoxLayout(box)
-        layout.setSpacing(12)
+        nav = QVBoxLayout()
+        nav.setSpacing(2)
+        for key, title, _lead, _build in sections:
+            button = ios.NavButton(title, COLORS[key], ICONS[key])
+            button.clicked.connect(lambda _=False, k=key: self._open(k))
+            self.nav[key] = button
+            nav.addWidget(button)
+        self.nothing = ios.label(t("Ничего не нашлось"), 10, ios.MUTED)
+        self.nothing.setContentsMargins(12, 10, 0, 0)
+        self.nothing.hide()
+        nav.addWidget(self.nothing)
+        col.addLayout(nav)
+        col.addStretch(1)
 
-        cards = QHBoxLayout()
-        self.mode_group = QButtonGroup(self)
-        self.mode_cards: dict[str, ModeCard] = {}
-        for key, title, hint in (
-            ("toggle", "Переключатель", "нажал — старт, ещё раз — стоп"),
-            ("ptt", "Удерживать", "держу — пишет, отпустил — стоп"),
-            ("pair", "Две клавиши", "одна — старт, другая — стоп"),
-        ):
-            card = ModeCard(title, hint)
-            self.mode_group.addButton(card)
-            self.mode_cards[key] = card
-            cards.addWidget(card)
-        layout.addLayout(cards)
-        current = self.cfg.get("hotkey_mode")
-        self.mode_cards.get(current, self.mode_cards["toggle"]).setChecked(True)
-        self.mode_group.buttonToggled.connect(lambda *_: self._sync_hotkeys())
+        done = ios.pill_button(t("Готово"), primary=True)
+        done.setFixedHeight(36)
+        done.clicked.connect(self._accept)
+        col.addWidget(done)
+        return side
 
-        form = QFormLayout()
-        form.setVerticalSpacing(10)
-        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    def _open(self, key: str) -> None:
+        for name, button in self.nav.items():
+            button.setChecked(name == key)
+        self.stack.setCurrentWidget(self.pages[key])
+        self._section = key
+
+    def _filter(self, text: str) -> None:
+        query = text.strip().lower()
+        shown = []
+        for key, button in self.nav.items():
+            page = self.pages[key]
+            hit = not query or query in button.text().lower() or any(query in r.lower() for r in page.row_titles)
+            button.setVisible(hit)
+            if hit:
+                shown.append(key)
+        self.nothing.setVisible(not shown)
+        if shown and self._section not in shown:
+            self._open(shown[0])
+
+    def _row(self, page: Page, group: ios.Group, title: str, trailing=None, subtitle: str = "",
+             below=None) -> ios.Row:
+        page.row_titles.append(title)
+        return group.add(ios.Row(title, trailing, subtitle, below))
+
+    def _switch(self, key: str) -> ios.Switch:
+        return ios.Switch(bool(self.cfg.get(key)))
+
+    # -------------------------------------------------------------- разделы
+    def _general(self, page: Page) -> None:
+        g = page.group(t("Язык"))
+        choice = self.cfg.get("ui_language") or "auto"
+        self.ui_language = ios.Segmented([(code, t(name) if code == "auto" else name)
+                                          for code, name in i18n.LANGUAGES], choice)
+        self.ui_language.changed.connect(self._language_changed)
+        self._row(page, g, t("Язык интерфейса"), self.ui_language)
+
+        g = page.group(t("Ключи"), t("Ключи шифруются средствами Windows под вашей учётной записью и уходят "
+                                     "только в OpenAI и Anthropic. Ключ OpenAI — на platform.openai.com/api-keys."))
+        self.openai_key = KeyField(secrets.OPENAI, providers.check_openai, "sk-…")
+        row = self._row(page, g, "OpenAI", self.openai_key, t("Распознавание и чистка текста"))
+        row.setProperty("hint", t("Распознавание и чистка текста"))
+        self.openai_key.row = row
+        self.anthropic_key = KeyField(secrets.ANTHROPIC, providers.check_anthropic, "sk-ant-…")
+        row = self._row(page, g, "Anthropic", self.anthropic_key, t("Нужен, только если чистить текст через Claude"))
+        row.setProperty("hint", t("Нужен, только если чистить текст через Claude"))
+        self.anthropic_key.row = row
+
+        g = page.group(t("Запуск"))
+        self.autostart = ios.Switch(startup.is_enabled())
+        self._row(page, g, t("Запускать вместе с Windows"), self.autostart)
+        self.hud = self._switch("hud")
+        self._row(page, g, t("Показывать остров"), self.hud, t("Капсула внизу экрана: запись, обработка, результат"))
+        self.play_sounds = self._switch("play_sounds")
+        self._row(page, g, t("Звуки"), self.play_sounds)
+        self.check_updates = self._switch("check_updates")
+        self._row(page, g, t("Сообщать о новых версиях"), self.check_updates, t("Раз в сутки спрашивать GitHub о релизе"))
+
+    def _hotkeys(self, page: Page) -> None:
+        g = self.hotkey_group = page.group(t("Диктовка"))
+        self.hotkey_mode = ios.Segmented([("toggle", t("Переключатель")), ("ptt", t("Удержание")),
+                                          ("pair", t("Две клавиши"))], self.cfg.get("hotkey_mode"))
+        self.hotkey_mode.changed.connect(lambda _: self._sync())
+        self._row(page, g, t("Режим"), self.hotkey_mode)
         self.hotkey_capture = KeyCapture(self.cfg.get("hotkey"))
-        self.hotkey_label = QLabel("Клавиша")
-        form.addRow(self.hotkey_label, self.hotkey_capture)
+        self.hotkey_capture.changed.connect(lambda _: self._sync())
+        self.hotkey_row = self._row(page, g, t("Начать диктовку"), self.hotkey_capture)
         self.stop_capture = KeyCapture(self.cfg.get("hotkey_stop") or "")
-        self.stop_label = QLabel("Закончить и вставить")
-        form.addRow(self.stop_label, self.stop_capture)
-        layout.addLayout(form)
-        self.hotkey_capture.changed.connect(lambda _: self._sync_hotkeys())
-        self.stop_capture.changed.connect(lambda _: self._sync_hotkeys())
+        self.stop_capture.changed.connect(lambda _: self._sync())
+        self.stop_row = self._row(page, g, t("Закончить и вставить"), self.stop_capture)
+        reset = ios.pill_button(t("Ctrl + Пробел"))
+        reset.clicked.connect(self._reset_hotkey)
+        self._row(page, g, t("Вернуть как было"), reset)
 
         self.hotkey_verdict = QLabel()
         self.hotkey_verdict.setWordWrap(True)
-        layout.addWidget(self.hotkey_verdict)
+        self.hotkey_verdict.setFont(ios.font(9.5))
+        page.body.addWidget(self.hotkey_verdict)
 
-        bottom = QHBoxLayout()
-        self.cancel_with_esc = QCheckBox("Esc отменяет запись без вставки")
-        self.cancel_with_esc.setChecked(bool(self.cfg.get("cancel_key")))
-        bottom.addWidget(self.cancel_with_esc)
-        bottom.addStretch(1)
-        reset = QPushButton("Вернуть Ctrl + Пробел")
-        reset.clicked.connect(self._reset_hotkey)
-        bottom.addWidget(reset)
-        layout.addLayout(bottom)
+        g = page.group(t("Отмена"), t("Подходит любая клавиша или сочетание, одиночный правый Ctrl / Alt / Shift, "
+                                      "а также средняя и боковые кнопки мыши. Сочетания перехватываются Шёпотом; "
+                                      "одиночные модификаторы и кнопки мыши другие программы тоже видят."))
+        self.cancel_with_esc = ios.Switch(bool(self.cfg.get("cancel_key")))
+        self._row(page, g, t("Esc отменяет запись"), self.cancel_with_esc,
+                  t("Выключите, если Esc нужен в программе, куда диктуете"))
 
-        hint = QLabel(
-            "Подходит любая клавиша или сочетание, одиночный правый Ctrl / Alt / Shift, "
-            "а также средняя и боковые кнопки мыши. Сочетания перехватываются Шёпотом; "
-            "одиночные модификаторы и кнопки мыши другие программы тоже видят."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888;")
-        layout.addWidget(hint)
+    def _text(self, page: Page) -> None:
+        g = self.text_group = page.group(t("Обработка"))
+        self.mode = ios.Segmented(mode_labels(), self.cfg.get("mode"))
+        self.mode.changed.connect(lambda _: self._sync())
+        self._row(page, g, t("Режим"), self.mode)
+        self.target_language = _combo(sorted(LANGUAGE_NAMES.items(), key=lambda p: p[1]),
+                                      self.cfg.get("target_language"), 180)
+        self.target_row = self._row(page, g, t("Переводить на"), self.target_language)
+        self.tone = ios.Segmented(tone_labels(), self.cfg.get("tone"))
+        self.tone_row = self._row(page, g, t("Тон"), self.tone)
+        self.custom_instruction = _line(self.cfg.get("custom_instruction"), t("например: обращайся на «вы»"), 260)
+        self.custom_row = self._row(page, g, t("Своё правило"), self.custom_instruction)
 
-        self._sync_hotkeys()
-        return box
+        learned = set((self.cfg.get("replacements") or {}).values())
+        g = page.group(t("Словарь"), t("Фиолетовые слова Шёпот выучил сам: вы исправили их после вставки."))
+        self.vocabulary = ios.ChipsEditor(list(self.cfg.get("vocabulary") or []), learned,
+                                          t("Добавить"), t("Имя, бренд или термин, Enter"))
+        self._row(page, g, t("Имена и термины"), below=self.vocabulary)
+        self.learn_corrections = self._switch("learn_corrections")
+        self._row(page, g, t("Учиться на моих исправлениях"), self.learn_corrections)
 
-    def _hotkey_mode(self) -> str:
-        for key, card in self.mode_cards.items():
-            if card.isChecked():
-                return key
-        return "toggle"
+        g = self.hints_group = page.group(t("Подсказки модели"))
+        self.latin_terms = self._switch("latin_terms")
+        self._row(page, g, t("Английские слова латиницей"), self.latin_terms, t("deploy, pull request, Figma — а не «деплой»"))
+        self.window_context = self._switch("window_context")
+        self.window_context.toggled.connect(lambda _: self._sync())
+        self._row(page, g, t("Учитывать текст окна"), self.window_context,
+                  t("Имена из переписки пишутся правильно с первого раза"))
+        self.live_transcribe = self._switch("live_transcribe")
+        self._row(page, g, t("Распознавать по ходу речи"), self.live_transcribe,
+                  t("Длинная диктовка готова почти сразу после остановки"))
+
+    def _engine(self, page: Page) -> None:
+        g = self.engine_group = page.group(t("Распознавание"))
+        self.stt_backend = ios.Segmented([("openai", t("Облако")), ("local", t("На компьютере"))],
+                                         self.cfg.get("stt_backend"))
+        self.stt_backend.changed.connect(lambda _: self._sync())
+        self._row(page, g, t("Где распознавать"), self.stt_backend)
+        self.stt_model = _line(self.cfg.get("stt_model"), "gpt-4o-transcribe", 200)
+        self.stt_model_row = self._row(page, g, t("Модель"), self.stt_model)
+        self.local_model = _combo([(m, m) for m in LOCAL_MODELS], self.cfg.get("local_model"), 140)
+        self.local_model_row = self._row(page, g, t("Модель"), self.local_model)
+        self.local_device = _combo([("auto", t("Автоматически")), ("cuda", t("Видеокарта (CUDA)")),
+                                    ("cpu", t("Процессор"))], self.cfg.get("local_device"), 180)
+        self.local_device_row = self._row(page, g, t("Считать на"), self.local_device)
+        self.source_language = _combo([("auto", t("Определять сам"))] + sorted(LANGUAGE_NAMES.items(), key=lambda p: p[1]),
+                                      self.cfg.get("source_language"), 180)
+        self._row(page, g, t("Язык речи"), self.source_language)
+
+        g = page.group(t("Чистка текста"))
+        self.llm_provider = ios.Segmented([("openai", "OpenAI"), ("anthropic", "Claude"), ("none", t("Без обработки"))],
+                                          self.cfg.get("llm_provider"))
+        self.llm_provider.changed.connect(lambda _: self._sync())
+        self._row(page, g, t("Чем чистить"), self.llm_provider)
+        self.llm_model = _line(self.cfg.get("llm_model"), "gpt-4o-mini", 200)
+        self.llm_model_row = self._row(page, g, t("Модель OpenAI"), self.llm_model)
+        self.anthropic_model = _line(self.cfg.get("anthropic_model"), "claude-opus-5", 200)
+        self.anthropic_model_row = self._row(page, g, t("Модель Claude"), self.anthropic_model)
+
+        g = page.group(t("Микрофон"))
+        pairs = [(None, t("Устройство по умолчанию"))]
+        try:
+            pairs += [(index, name) for index, name in audio.list_input_devices()]
+        except Exception:
+            pass
+        self.device = _combo(pairs, self.cfg.get("input_device"), 260)
+        self._row(page, g, t("Устройство"), self.device)
+        self.max_seconds = QSpinBox()
+        self.max_seconds.setRange(5, 900)
+        self.max_seconds.setSuffix(" " + t("с"))
+        self.max_seconds.setValue(int(self.cfg.get("max_seconds")))
+        ios.flat(self.max_seconds, 90)
+        self._row(page, g, t("Длиннее не записывать"), self.max_seconds)
+
+    def _insert(self, page: Page) -> None:
+        g = self.insert_group = page.group(t("Способ"))
+        self.insert_method = ios.Segmented([("paste", t("Буфер")), ("type", t("Набором")),
+                                            ("clipboard", t("Только копировать"))], self.cfg.get("insert_method"))
+        self.insert_method.changed.connect(lambda _: self._sync())
+        self._row(page, g, t("Вставлять"), self.insert_method)
+        self.restore_clipboard = self._switch("restore_clipboard")
+        self.restore_clipboard.toggled.connect(lambda _: self._sync())
+        self.restore_row = self._row(page, g, t("Возвращать прежний буфер"), self.restore_clipboard)
+        self.restore_delay = QDoubleSpinBox()
+        self.restore_delay.setRange(0.1, 5.0)
+        self.restore_delay.setSingleStep(0.1)
+        self.restore_delay.setDecimals(1)
+        self.restore_delay.setSuffix(" " + t("с"))
+        self.restore_delay.setValue(float(self.cfg.get("restore_delay")))
+        ios.flat(self.restore_delay, 90)
+        self.delay_row = self._row(page, g, t("Вернуть через"), self.restore_delay,
+                                   t("Увеличьте, если медленное приложение вставляет старый буфер"))
+
+        g = page.group(t("Правка выделенного"), t("В Windows Terminal результат встаёт в строку ввода. В редакторах "
+                                                   "кода и других терминалах правка не включается: там Ctrl+C "
+                                                   "прерывает процесс."))
+        self.voice_edit = self._switch("voice_edit")
+        self._row(page, g, t("Править выделенный текст"), self.voice_edit,
+                  t("Выделите текст и нажмите клавишу диктовки: Деловой, Дружелюбный, Короче или своя просьба"))
+
+    def _claude(self, page: Page) -> None:
+        g = page.group(t("Остров"), t("Хуки дописываются в ~/.claude/settings.json, рядом кладётся резервная "
+                                      "копия; чужие хуки не трогаются. Пока Шёпот выключен, Claude Code пишет "
+                                      "об ошибке хука — тогда отключите."))
+        self.claude_island = self._switch("claude_island")
+        self._row(page, g, t("Показывать сессии в острове"), self.claude_island)
+        self.claude_connect = ios.pill_button("")
+        self.claude_connect.clicked.connect(self._toggle_claude_hooks)
+        self.claude_status = self._row(page, g, t("Хуки"), self.claude_connect, " ")
+
+        g = page.group(t("Ответ голосом"), t("Текст уходит в терминал сессии, которая ждёт ответа или только что "
+                                             "закончила, и отправляется Enter. Окно переключать не нужно."))
+        self.claude_reply = self._switch("claude_reply")
+        self.claude_reply.toggled.connect(lambda _: self._sync())
+        self._row(page, g, t("Отвечать сессии голосом"), self.claude_reply)
+        self.claude_reply_capture = KeyCapture(self.cfg.get("claude_reply_hotkey") or "ctrl+alt+space")
+        self.reply_row = self._row(page, g, t("Клавиша ответа"), self.claude_reply_capture)
+        self._sync_claude_hooks()
+
+    def _windows(self, page: Page) -> None:
+        g = page.group(t("Окна-призраки"), t("Шаг 10 %. Alt + средняя кнопка возвращает 100 %. На 30 % и ниже "
+                                             "клики проходят сквозь окно. Alt + колесо перестаёт доходить до программ."))
+        self.ghost = self._switch("ghost")
+        self._row(page, g, t("Alt + колесо — прозрачность"), self.ghost)
+
+        g = page.group(t("Прыжок в проект"), t("Открывает VS Code и Windows Terminal с вкладками Claude Code, Codex "
+                                               "и сервера и ставит окна рядом; уже открытые окна не дублирует. "
+                                               "Win + P занят Windows, поэтому по умолчанию Win + J."))
+        self.jump = self._switch("jump")
+        self.jump.toggled.connect(lambda _: self._sync())
+        self._row(page, g, t("Поиск проекта по клавише"), self.jump)
+        self.jump_capture = KeyCapture(self.cfg.get("jump_hotkey") or "win+j")
+        self.jump_key_row = self._row(page, g, t("Клавиша"), self.jump_capture)
+        self.jump_root = _line(self.cfg.get("jump_root"), str(jump.default_root()), 280)
+        self.jump_root_row = self._row(page, g, t("Папка проектов"), self.jump_root)
+
+    def _shots(self, page: Page) -> None:
+        g = page.group("", t("Win+Shift+S — и в буфере окажется путь к PNG вместо картинки. Тумблер есть и в "
+                             "меню значка в трее, чтобы включать на ходу."))
+        self.clipshot = self._switch("clipshot")
+        self.clipshot.toggled.connect(lambda _: self._sync())
+        self._row(page, g, t("Картинка из буфера → путь к файлу"), self.clipshot)
+        self.clipshot_dir = _line(self.cfg.get("clipshot_dir"), str(clipshot.default_dir()), 280)
+        self.clipshot_dir_row = self._row(page, g, t("Папка"), self.clipshot_dir)
+        self.clipshot_keep_days = QSpinBox()
+        self.clipshot_keep_days.setRange(0, 365)
+        self.clipshot_keep_days.setSuffix(" " + t("дн."))
+        self.clipshot_keep_days.setSpecialValueText(t("не удалять"))
+        self.clipshot_keep_days.setValue(int(self.cfg.get("clipshot_keep_days")))
+        ios.flat(self.clipshot_keep_days, 110)
+        self.clipshot_keep_row = self._row(page, g, t("Хранить снимки"), self.clipshot_keep_days)
+
+    # ----------------------------------------------------------- состояние
+    def _sync(self) -> None:
+        mode = self.hotkey_mode.value()
+        self.hotkey_row.title.setText({"toggle": t("Старт и стоп"), "ptt": t("Удерживать"),
+                                       "pair": t("Начать запись")}[mode])
+        ios.show_row(self.stop_row, mode == "pair")
+        kind, text = self._hotkey_problem()
+        colors = {"ok": ("#1B7A35", "#E3F7E8"), "warn": ("#9A5B00", "#FFF1DC"), "bad": ("#B42318", "#FDE7E7")}
+        fg, bg = colors[kind]
+        self.hotkey_verdict.setText(text)
+        self.hotkey_verdict.setStyleSheet(f"QLabel {{ color: {fg}; background: {bg}; border-radius: 10px;"
+                                          " padding: 10px 14px; }")
+
+        text_mode = self.mode.value()
+        provider = self.llm_provider.value()
+        processing = text_mode != "raw" and provider != "none"
+        ios.show_row(self.target_row, text_mode == "translate")
+        ios.show_row(self.tone_row, processing)
+        ios.show_row(self.custom_row, processing)
+        self.text_group.set_footer({"raw": t("Текст вставляется ровно так, как распознан."),
+                                    "translate": t("Говорите на любом языке — вставится на выбранном."),
+                                    }.get(text_mode, t("Убирает «эээ», повторы и запинки, расставляет пунктуацию."))
+                                   if provider != "none" or text_mode == "raw" else
+                                   t("Чистка выключена в «Распознавание → Чистка текста»."))
+        self.hints_group.set_footer(
+            t("Текст из окна уходит модели вместе с диктовкой. Терминалы, редакторы кода и менеджеры паролей "
+              "не читаются никогда.") if self.window_context.isChecked()
+            else t("Контекст окна выключен: модель видит только то, что вы сказали."))
+
+        local = self.stt_backend.value() == "local"
+        ios.show_row(self.stt_model_row, not local)
+        ios.show_row(self.local_model_row, local)
+        ios.show_row(self.local_device_row, local)
+        self.engine_group.set_footer(t("Без интернета, на видеокарте или процессоре. Нужен faster-whisper и запуск "
+                                       "из исходников.") if local else "")
+        ios.show_row(self.llm_model_row, provider == "openai")
+        ios.show_row(self.anthropic_model_row, provider == "anthropic")
+
+        method = self.insert_method.value()
+        ios.show_row(self.restore_row, method == "paste")
+        ios.show_row(self.delay_row, method == "paste" and self.restore_clipboard.isChecked())
+        self.insert_group.set_footer({"type": t("Печатает посимвольно — медленнее, зато буфер обмена не трогается."),
+                                      "clipboard": t("Текст только кладётся в буфер — вставляете сами Ctrl+V."),
+                                      }.get(method, t("Самый быстрый способ: через буфер обмена и Ctrl+V.")))
+
+        ios.show_row(self.reply_row, self.claude_reply.isChecked())
+        ios.show_row(self.jump_key_row, self.jump.isChecked())
+        ios.show_row(self.jump_root_row, self.jump.isChecked())
+        ios.show_row(self.clipshot_dir_row, self.clipshot.isChecked())
+        ios.show_row(self.clipshot_keep_row, self.clipshot.isChecked())
+
+    def _language_changed(self, code: str) -> None:
+        if not self._save(close=False, language=code):
+            self.ui_language.set_value(self.cfg.get("ui_language") or "auto")
+            return
+        i18n.set_language(code)
+        self._build(self._section)
 
     def _reset_hotkey(self) -> None:
-        self.mode_cards["toggle"].setChecked(True)
+        self.hotkey_mode.set_value("toggle")
         self.hotkey_capture.set_value("ctrl+space")
 
     def _hotkey_problem(self) -> tuple[str, str]:
         """Итог проверки привязок: (ok | warn | bad, текст)."""
-        mode = self._hotkey_mode()
+        mode = self.hotkey_mode.value()
         main = self.hotkey_capture.value()
         if not main:
-            return "bad", "Назначьте клавишу: нажмите на поле, затем нужную клавишу."
+            return "bad", t("Назначьте клавишу: нажмите на поле, затем нужную клавишу.")
         verdict = hotkeys.assess(main)
         if verdict[0] == "bad":
             return verdict
         if mode == "pair":
             stop = self.stop_capture.value()
             if not stop:
-                return "bad", "Назначьте клавишу, которая заканчивает запись."
+                return "bad", t("Назначьте клавишу, которая заканчивает запись.")
             stop_verdict = hotkeys.assess(stop, other=main)
             if stop_verdict[0] == "bad" or verdict[0] == "ok":
                 verdict = stop_verdict if stop_verdict[0] != "ok" else verdict
@@ -508,322 +794,8 @@ class SettingsDialog(QDialog):
             if taken:
                 return "bad", taken
         if mode == "ptt" and main in hotkeys.MOUSE_BUTTONS and verdict[0] == "ok":
-            return "ok", f"Готово. Держите {hotkeys.display(main)}, пока говорите."
+            return "ok", t("Готово. Держите {key}, пока говорите.", key=hotkeys.display(main))
         return verdict
-
-    def _sync_hotkeys(self) -> None:
-        mode = self._hotkey_mode()
-        pair = mode == "pair"
-        self.stop_label.setVisible(pair)
-        self.stop_capture.setVisible(pair)
-        self.hotkey_label.setText({"toggle": "Старт и стоп", "ptt": "Удерживать",
-                                   "pair": "Начать запись"}[mode])
-        kind, text = self._hotkey_problem()
-        colors = {"ok": ("#1f8a4c", "rgba(31,138,76,0.12)"),
-                  "warn": ("#a8620a", "rgba(168,98,10,0.12)"),
-                  "bad": ("#c62f3a", "rgba(198,47,58,0.12)")}
-        fg, bg = colors[kind]
-        self.hotkey_verdict.setText(text)
-        self.hotkey_verdict.setStyleSheet(
-            f"QLabel {{ color: {fg}; background: {bg}; border-radius: 8px; padding: 8px 12px; }}"
-        )
-
-    def _text_group(self) -> QGroupBox:
-        box = QGroupBox("Обработка текста")
-        form = QFormLayout(box)
-
-        self.mode = QComboBox()
-        _fill(self.mode, MODE_LABELS, self.cfg.get("mode"))
-        self.mode.currentIndexChanged.connect(self._sync_enabled)
-        form.addRow("Режим", self.mode)
-
-        self.tone = QComboBox()
-        _fill(self.tone, TONE_LABELS, self.cfg.get("tone"))
-        form.addRow("Тон", self.tone)
-
-        self.source_language = QComboBox()
-        _fill(self.source_language, SOURCE_LANGUAGES, self.cfg.get("source_language"))
-        form.addRow("Язык речи", self.source_language)
-
-        self.latin_terms = QComboBox()
-        _fill(self.latin_terms, [(True, "Латиницей: deploy, Figma"),
-                                 (False, "Как слышатся: деплой, фигма")],
-              bool(self.cfg.get("latin_terms")))
-        self.latin_terms.setToolTip("Как писать английские слова и названия в русской речи.")
-        form.addRow("Английские слова", self.latin_terms)
-
-        self.target_language = QComboBox()
-        _fill(
-            self.target_language,
-            sorted(LANGUAGE_NAMES.items(), key=lambda p: p[1]),
-            self.cfg.get("target_language"),
-        )
-        form.addRow("Переводить на", self.target_language)
-
-        self.vocabulary = QPlainTextEdit("\n".join(self.cfg.get("vocabulary") or []))
-        self.vocabulary.setPlaceholderText("Одно имя, бренд или термин в строке")
-        self.vocabulary.setFixedHeight(76)
-        form.addRow("Словарь", self.vocabulary)
-
-        self.learn_corrections = QCheckBox("Запоминать мои исправления названий и терминов")
-        self.learn_corrections.setChecked(bool(self.cfg.get("learn_corrections")))
-        self.learn_corrections.setToolTip(
-            "Исправили «фигму» на «Figma» после вставки — слово попадёт в словарь,\n"
-            "и в следующий раз распознается правильно. Текст окна читается только\n"
-            "на этом компьютере и никуда не отправляется."
-        )
-        form.addRow("", self.learn_corrections)
-
-        self.window_context = QCheckBox("Учитывать текст окна, куда диктую")
-        self.window_context.setChecked(bool(self.cfg.get("window_context")))
-        self.window_context.setToolTip(
-            "Заголовок окна и текст поля уходят модели вместе с диктовкой: так имена\n"
-            "и термины из переписки пишутся правильно с первого раза. Из терминалов,\n"
-            "редакторов кода и менеджеров паролей текст не читается никогда."
-        )
-        form.addRow("", self.window_context)
-
-        self.live_transcribe = QCheckBox("Распознавать длинную диктовку по ходу речи")
-        self.live_transcribe.setChecked(bool(self.cfg.get("live_transcribe")))
-        self.live_transcribe.setToolTip(
-            "Запись режется по паузам и распознаётся кусками, пока вы говорите,\n"
-            "поэтому после второго нажатия текст появляется почти сразу."
-        )
-        form.addRow("", self.live_transcribe)
-
-        self.custom_instruction = QPlainTextEdit(self.cfg.get("custom_instruction") or "")
-        self.custom_instruction.setPlaceholderText(
-            "Например: всегда обращайся на «вы», не используй эмодзи"
-        )
-        self.custom_instruction.setFixedHeight(56)
-        form.addRow("Своё правило", self.custom_instruction)
-        return box
-
-    def _engine_group(self) -> QGroupBox:
-        box = QGroupBox("Движки")
-        form = QFormLayout(box)
-
-        self.stt_backend = QComboBox()
-        _fill(self.stt_backend, STT_BACKENDS, self.cfg.get("stt_backend"))
-        self.stt_backend.currentIndexChanged.connect(self._sync_enabled)
-        form.addRow("Распознавание", self.stt_backend)
-
-        self.stt_model = QLineEdit(self.cfg.get("stt_model"))
-        form.addRow("Облачная модель", self.stt_model)
-
-        self.local_model = QComboBox()
-        _fill(self.local_model, [(m, m) for m in LOCAL_MODELS], self.cfg.get("local_model"))
-        form.addRow("Локальная модель", self.local_model)
-
-        self.local_device = QComboBox()
-        _fill(self.local_device, LOCAL_DEVICES, self.cfg.get("local_device"))
-        form.addRow("Считать на", self.local_device)
-
-        self.llm_provider = QComboBox()
-        _fill(self.llm_provider, LLM_PROVIDERS, self.cfg.get("llm_provider"))
-        self.llm_provider.currentIndexChanged.connect(self._sync_enabled)
-        form.addRow("Обработка текста", self.llm_provider)
-
-        self.llm_model = QLineEdit(self.cfg.get("llm_model"))
-        form.addRow("Модель OpenAI", self.llm_model)
-
-        self.anthropic_model = QLineEdit(self.cfg.get("anthropic_model"))
-        form.addRow("Модель Claude", self.anthropic_model)
-        return box
-
-    def _behaviour_group(self) -> QGroupBox:
-        box = QGroupBox("Поведение")
-        form = QFormLayout(box)
-
-        self.device = QComboBox()
-        self.device.addItem("Устройство по умолчанию", None)
-        try:
-            for index, name in audio.list_input_devices():
-                self.device.addItem(name, index)
-        except Exception:
-            pass
-        selected = self.device.findData(self.cfg.get("input_device"))
-        self.device.setCurrentIndex(selected if selected >= 0 else 0)
-        form.addRow("Микрофон", self.device)
-
-        self.max_seconds = QSpinBox()
-        self.max_seconds.setRange(5, 900)
-        self.max_seconds.setSuffix(" с")
-        self.max_seconds.setValue(int(self.cfg.get("max_seconds")))
-        form.addRow("Максимум записи", self.max_seconds)
-
-        self.insert_method = QComboBox()
-        _fill(self.insert_method, INSERT_METHODS, self.cfg.get("insert_method"))
-        self.insert_method.currentIndexChanged.connect(self._sync_enabled)
-        form.addRow("Вставка", self.insert_method)
-
-        self.restore_clipboard = QCheckBox("Возвращать прежнее содержимое буфера")
-        self.restore_clipboard.setChecked(bool(self.cfg.get("restore_clipboard")))
-        self.restore_clipboard.toggled.connect(self._sync_enabled)
-        form.addRow("", self.restore_clipboard)
-
-        self.restore_delay = QDoubleSpinBox()
-        self.restore_delay.setRange(0.1, 5.0)
-        self.restore_delay.setSingleStep(0.1)
-        self.restore_delay.setDecimals(1)
-        self.restore_delay.setSuffix(" с")
-        self.restore_delay.setValue(float(self.cfg.get("restore_delay")))
-        self.restore_delay.setToolTip(
-            "Если медленное приложение вставляет старое содержимое буфера — увеличьте."
-        )
-        form.addRow("Возврат буфера через", self.restore_delay)
-
-        self.voice_edit = QCheckBox("Правка выделенного текста по горячей клавише")
-        self.voice_edit.setChecked(bool(self.cfg.get("voice_edit")))
-        self.voice_edit.setToolTip(
-            "Выделите текст и нажмите горячую клавишу: вместо записи откроется панель —\n"
-            "выберите стиль или напишите, как изменить, и выделение заменится.\n"
-            "В Windows Terminal результат встаёт в строку ввода. В редакторах кода и других\n"
-            "терминалах не включается: там Ctrl+C прерывает процесс."
-        )
-        form.addRow("", self.voice_edit)
-
-        self.hud = QCheckBox("Показывать индикатор поверх окон")
-        self.hud.setChecked(bool(self.cfg.get("hud")))
-        form.addRow("", self.hud)
-
-        self.play_sounds = QCheckBox("Звуковые сигналы")
-        self.play_sounds.setChecked(bool(self.cfg.get("play_sounds")))
-        form.addRow("", self.play_sounds)
-
-        self.autostart = QCheckBox("Запускать вместе с Windows")
-        self.autostart.setChecked(startup.is_enabled())
-        form.addRow("", self.autostart)
-
-        self.check_updates = QCheckBox("Сообщать о новых версиях")
-        self.check_updates.setChecked(bool(self.cfg.get("check_updates")))
-        self.check_updates.setToolTip("Раз в сутки Шёпот спрашивает GitHub о последнем релизе")
-        form.addRow("", self.check_updates)
-        return box
-
-    def _claude_group(self) -> QGroupBox:
-        box = QGroupBox("Claude Code")
-        form = QFormLayout(box)
-        self.claude_island = QCheckBox("Показывать сессии Claude Code в острове")
-        self.claude_island.setChecked(bool(self.cfg.get("claude_island")))
-        form.addRow("", self.claude_island)
-
-        self.claude_reply = QCheckBox("Отвечать сессии голосом")
-        self.claude_reply.setChecked(bool(self.cfg.get("claude_reply")))
-        self.claude_reply.setToolTip(
-            "Нажмите клавишу ответа, продиктуйте и нажмите ещё раз: текст уйдёт в терминал\n"
-            "сессии, которая ждёт ответа или только что закончила, и отправится Enter.\n"
-            "Окно переключать не нужно. Нужны подключённые хуки."
-        )
-        self.claude_reply_capture = KeyCapture(self.cfg.get("claude_reply_hotkey") or "ctrl+alt+space")
-        row = QHBoxLayout()
-        row.addWidget(self.claude_reply)
-        row.addWidget(self.claude_reply_capture, 1)
-        form.addRow("Ответ голосом", row)
-
-        self.claude_status = QLabel()
-        self.claude_status.setWordWrap(True)
-        self.claude_connect = QPushButton()
-        self.claude_connect.clicked.connect(self._toggle_claude_hooks)
-        row = QHBoxLayout()
-        row.addWidget(self.claude_connect)
-        row.addWidget(self.claude_status, 1)
-        form.addRow("Хуки", row)
-        hint = QLabel(
-            "Подключение дописывает хуки Шёпота в ~/.claude/settings.json (рядом кладётся "
-            "резервная копия; чужие хуки не трогаются). Остров показывает, кто из сессий думает, "
-            "закончил или ждёт разрешения, а разрешение можно дать прямо в нём. Пока Шёпот "
-            "выключен, Claude Code работает как обычно, но пишет об ошибке хука — тогда отключите."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid);")
-        form.addRow("", hint)
-        self._sync_claude_hooks()
-        return box
-
-    def _sync_claude_hooks(self) -> None:
-        installed = claude_hooks.is_installed()
-        self.claude_connect.setText("Отключить от Claude Code" if installed else "Подключить к Claude Code")
-        self.claude_status.setText("Подключено. Новые сессии Claude Code видны сразу, "
-                                   "уже открытые — после перезапуска." if installed else "Не подключено.")
-
-    def _toggle_claude_hooks(self) -> None:
-        try:
-            if claude_hooks.is_installed():
-                claude_hooks.uninstall()
-            else:
-                claude_hooks.install()
-        except (OSError, ValueError) as exc:
-            self.claude_status.setText(f"Не получилось изменить настройки Claude Code: {exc}")
-            return
-        self._sync_claude_hooks()
-
-    def _clipshot_group(self) -> QGroupBox:
-        box = QGroupBox("Скриншоты в терминал")
-        form = QFormLayout(box)
-
-        self.clipshot = QCheckBox("Превращать картинку из буфера в путь к файлу")
-        self.clipshot.setChecked(bool(self.cfg.get("clipshot")))
-        self.clipshot.toggled.connect(self._sync_enabled)
-        form.addRow("", self.clipshot)
-
-        self.clipshot_dir = QLineEdit(self.cfg.get("clipshot_dir") or "")
-        self.clipshot_dir.setPlaceholderText(str(clipshot.default_dir()))
-        form.addRow("Папка", self.clipshot_dir)
-
-        self.clipshot_keep_days = QSpinBox()
-        self.clipshot_keep_days.setRange(0, 365)
-        self.clipshot_keep_days.setSuffix(" дн.")
-        self.clipshot_keep_days.setSpecialValueText("не удалять")
-        self.clipshot_keep_days.setValue(int(self.cfg.get("clipshot_keep_days")))
-        form.addRow("Хранить снимки", self.clipshot_keep_days)
-
-        hint = QLabel(
-            "Терминал не принимает картинку по Ctrl+V. Со включённым тумблером "
-            "снимок с Win+Shift+S сохраняется в PNG, а в буфер вместо картинки "
-            "ложится путь к нему — его и вставляет Ctrl+V.\n"
-            "Тумблер есть и в меню значка в трее, чтобы включать на ходу."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888;")
-        form.addRow("", hint)
-        return box
-
-    def _windows_group(self) -> QGroupBox:
-        box = QGroupBox("Окна и проекты")
-        form = QFormLayout(box)
-
-        self.ghost = QCheckBox("Окно-призрак: Alt + колесо над окном меняет прозрачность")
-        self.ghost.setChecked(bool(self.cfg.get("ghost")))
-        self.ghost.setToolTip(
-            "Шаг 10 %. Alt + средняя кнопка возвращает 100 %. На 30 % и ниже окно\n"
-            "пропускает клики насквозь. Alt + колесо перестаёт доходить до программ\n"
-            "(например, до быстрой прокрутки в VS Code или масштаба в Photoshop)."
-        )
-        form.addRow("", self.ghost)
-
-        self.jump = QCheckBox("Прыжок в проект: поиск по папкам и запуск рабочего места")
-        self.jump.setChecked(bool(self.cfg.get("jump")))
-        self.jump.toggled.connect(self._sync_enabled)
-        form.addRow("", self.jump)
-
-        self.jump_capture = KeyCapture(self.cfg.get("jump_hotkey") or "win+j")
-        form.addRow("Клавиша прыжка", self.jump_capture)
-
-        self.jump_root = QLineEdit(self.cfg.get("jump_root") or "")
-        self.jump_root.setPlaceholderText(str(jump.default_root()))
-        form.addRow("Папка проектов", self.jump_root)
-
-        hint = QLabel(
-            "Прыжок открывает VS Code и Windows Terminal с вкладками Claude Code, Codex и сервера "
-            "(npm run dev) и ставит окна рядом; уже открытые окна проекта не дублирует. Что "
-            "открывать, отмечается галочками в самой панели (Alt + 1…5) и запоминается для "
-            "проекта. Win + P занят Windows (второй экран), поэтому по умолчанию Win + J."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888;")
-        form.addRow("", hint)
-        return box
 
     def _jump_problem(self) -> str:
         if not self.jump.isChecked():
@@ -832,111 +804,114 @@ class SettingsDialog(QDialog):
         try:
             binding = hotkeys.parse_binding(text)
         except ValueError as exc:
-            return f"не получилось разобрать сочетание: {exc}"
+            return t("не получилось разобрать сочетание: {error}", error=exc)
         if binding.raw:
-            return "для прыжка нужно сочетание с обычной клавишей, например Win + J"
+            return t("для прыжка нужно сочетание с обычной клавишей, например Win + J")
         if binding.text == hotkeys.parse_binding(self.hotkey_capture.value()).text:
-            return "совпадает с клавишей диктовки"
+            return t("совпадает с клавишей диктовки")
         kind, message = hotkeys.assess(text)
         if kind == "bad":
             return message
         return hotkeys.try_register(text) or ""
 
-    # ----------------------------------------------------------- активность
-    def _sync_enabled(self) -> None:
-        local = self.stt_backend.currentData() == "local"
-        self.stt_model.setEnabled(not local)
-        self.local_model.setEnabled(local)
-        self.local_device.setEnabled(local)
+    def _sync_claude_hooks(self) -> None:
+        installed = claude_hooks.is_installed()
+        self.claude_connect.setText(t("Отключить") if installed else t("Подключить"))
+        self.claude_status.subtitle.setText(
+            t("Подключены. Новые сессии видны сразу, открытые — после перезапуска.") if installed
+            else t("Не подключены: остров не видит сессии Claude Code."))
+        self.claude_status.subtitle.show()
 
-        provider = self.llm_provider.currentData()
-        processing = self.mode.currentData() != "raw" and provider != "none"
-        self.llm_model.setEnabled(processing and provider == "openai")
-        self.anthropic_model.setEnabled(processing and provider == "anthropic")
-        self.tone.setEnabled(processing)
-        self.custom_instruction.setEnabled(processing)
-        self.target_language.setEnabled(self.mode.currentData() == "translate")
-
-        uses_clipboard = self.insert_method.currentData() == "paste"
-        self.restore_clipboard.setEnabled(uses_clipboard)
-        self.restore_delay.setEnabled(uses_clipboard and self.restore_clipboard.isChecked())
-
-        catching = self.clipshot.isChecked()
-        self.clipshot_dir.setEnabled(catching)
-        self.clipshot_keep_days.setEnabled(catching)
-
-        jumping = self.jump.isChecked()
-        self.jump_capture.setEnabled(jumping)
-        self.jump_root.setEnabled(jumping)
+    def _toggle_claude_hooks(self) -> None:
+        try:
+            if claude_hooks.is_installed():
+                claude_hooks.uninstall()
+            else:
+                claude_hooks.install()
+        except (OSError, ValueError) as exc:
+            self.claude_status.subtitle.setText(t("Не получилось изменить настройки Claude Code: {error}", error=exc))
+            return
+        self._sync_claude_hooks()
 
     # -------------------------------------------------------------- сохранение
+    def reject(self) -> None:
+        self._accept()                              # крестик и Esc тоже сохраняют, как в iOS
+
+    def closeEvent(self, event) -> None:
+        if self._closing:
+            event.accept()
+            return
+        event.ignore()
+        self._accept()
+
     def _accept(self) -> None:
+        if self._save(close=True):
+            self._closing = True
+            self.accept()
+
+    def _save(self, close: bool, language: str | None = None) -> bool:
         kind, problem = self._hotkey_problem()
         if kind == "bad":
-            QMessageBox.warning(self, "Шёпот", f"Горячая клавиша: {problem}")
-            return
-        hotkey_mode = self._hotkey_mode()
+            self._open("keys")
+            QMessageBox.warning(self, t("Шёпот"), t("Горячая клавиша: {problem}", problem=problem))
+            return False
+        hotkey_mode = self.hotkey_mode.value()
         jump_problem = self._jump_problem()
         if jump_problem:
-            QMessageBox.warning(self, "Шёпот", f"Клавиша прыжка: {jump_problem}")
-            return
+            self._open("windows")
+            QMessageBox.warning(self, t("Шёпот"), t("Клавиша прыжка: {problem}", problem=jump_problem))
+            return False
 
-        vocabulary = [
-            line.strip()
-            for line in self.vocabulary.toPlainText().splitlines()
-            if line.strip()
-        ]
-
-        self.cfg.update(
-            {
-                "hotkey": self.hotkey_capture.value(),
-                "hotkey_stop": self.stop_capture.value() if hotkey_mode == "pair" else "",
-                "hotkey_mode": hotkey_mode,
-                "cancel_key": "esc" if self.cancel_with_esc.isChecked() else "",
-                "mode": self.mode.currentData(),
-                "tone": self.tone.currentData(),
-                "source_language": self.source_language.currentData(),
-                "latin_terms": bool(self.latin_terms.currentData()),
-                "learn_corrections": self.learn_corrections.isChecked(),
-                "target_language": self.target_language.currentData(),
-                "vocabulary": vocabulary,
-                # удалили слово из словаря — забываем и выученные замены на него
-                "replacements": {
-                    old: new for old, new in (self.cfg.get("replacements") or {}).items()
-                    if new.lower() in {term.lower() for term in vocabulary}
-                },
-                "custom_instruction": self.custom_instruction.toPlainText().strip(),
-                "stt_backend": self.stt_backend.currentData(),
-                "stt_model": self.stt_model.text().strip() or "gpt-4o-transcribe",
-                "local_model": self.local_model.currentData(),
-                "local_device": self.local_device.currentData(),
-                "llm_provider": self.llm_provider.currentData(),
-                "llm_model": self.llm_model.text().strip() or "gpt-4o-mini",
-                "anthropic_model": self.anthropic_model.text().strip() or "claude-opus-5",
-                "input_device": self.device.currentData(),
-                "max_seconds": self.max_seconds.value(),
-                "insert_method": self.insert_method.currentData(),
-                "restore_clipboard": self.restore_clipboard.isChecked(),
-                "restore_delay": self.restore_delay.value(),
-                "clipshot": self.clipshot.isChecked(),
-                "claude_island": self.claude_island.isChecked(),
-                "claude_reply": self.claude_reply.isChecked(),
-                "claude_reply_hotkey": self.claude_reply_capture.value() or "ctrl+alt+space",
-                "ghost": self.ghost.isChecked(),
-                "check_updates": self.check_updates.isChecked(),
-                "jump": self.jump.isChecked(),
-                "jump_hotkey": self.jump_capture.value() or "win+j",
-                "jump_root": self.jump_root.text().strip(),
-                "clipshot_dir": self.clipshot_dir.text().strip(),
-                "clipshot_keep_days": self.clipshot_keep_days.value(),
-                "voice_edit": self.voice_edit.isChecked(),
-                "window_context": self.window_context.isChecked(),
-                "live_transcribe": self.live_transcribe.isChecked(),
-                "hud": self.hud.isChecked(),
-                "play_sounds": self.play_sounds.isChecked(),
-                "autostart": self.autostart.isChecked(),
-            }
-        )
+        vocabulary = self.vocabulary.terms()
+        self.cfg.update({
+            "ui_language": language or self.ui_language.value(),
+            "hotkey": self.hotkey_capture.value(),
+            "hotkey_stop": self.stop_capture.value() if hotkey_mode == "pair" else "",
+            "hotkey_mode": hotkey_mode,
+            "cancel_key": "esc" if self.cancel_with_esc.isChecked() else "",
+            "mode": self.mode.value(),
+            "tone": self.tone.value(),
+            "source_language": self.source_language.currentData(),
+            "latin_terms": self.latin_terms.isChecked(),
+            "learn_corrections": self.learn_corrections.isChecked(),
+            "target_language": self.target_language.currentData(),
+            "vocabulary": vocabulary,
+            # удалили слово из словаря — забываем и выученные замены на него
+            "replacements": {
+                old: new for old, new in (self.cfg.get("replacements") or {}).items()
+                if new.lower() in {term.lower() for term in vocabulary}
+            },
+            "custom_instruction": self.custom_instruction.text().strip(),
+            "stt_backend": self.stt_backend.value(),
+            "stt_model": self.stt_model.text().strip() or "gpt-4o-transcribe",
+            "local_model": self.local_model.currentData(),
+            "local_device": self.local_device.currentData(),
+            "llm_provider": self.llm_provider.value(),
+            "llm_model": self.llm_model.text().strip() or "gpt-4o-mini",
+            "anthropic_model": self.anthropic_model.text().strip() or "claude-opus-5",
+            "input_device": self.device.currentData(),
+            "max_seconds": self.max_seconds.value(),
+            "insert_method": self.insert_method.value(),
+            "restore_clipboard": self.restore_clipboard.isChecked(),
+            "restore_delay": self.restore_delay.value(),
+            "clipshot": self.clipshot.isChecked(),
+            "claude_island": self.claude_island.isChecked(),
+            "claude_reply": self.claude_reply.isChecked(),
+            "claude_reply_hotkey": self.claude_reply_capture.value() or "ctrl+alt+space",
+            "ghost": self.ghost.isChecked(),
+            "check_updates": self.check_updates.isChecked(),
+            "jump": self.jump.isChecked(),
+            "jump_hotkey": self.jump_capture.value() or "win+j",
+            "jump_root": self.jump_root.text().strip(),
+            "clipshot_dir": self.clipshot_dir.text().strip(),
+            "clipshot_keep_days": self.clipshot_keep_days.value(),
+            "voice_edit": self.voice_edit.isChecked(),
+            "window_context": self.window_context.isChecked(),
+            "live_transcribe": self.live_transcribe.isChecked(),
+            "hud": self.hud.isChecked(),
+            "play_sounds": self.play_sounds.isChecked(),
+            "autostart": self.autostart.isChecked(),
+        })
         self.cfg.save()
 
         for field in (self.openai_key, self.anthropic_key):
@@ -946,9 +921,9 @@ class SettingsDialog(QDialog):
                 secrets.set_key(field.name, typed)
         providers.reset()
 
-        try:
-            startup.set_enabled(self.autostart.isChecked())
-        except OSError as exc:
-            QMessageBox.warning(self, "Шёпот", f"Не удалось изменить автозапуск: {exc}")
-
-        self.accept()
+        if close:
+            try:
+                startup.set_enabled(self.autostart.isChecked())
+            except OSError as exc:
+                QMessageBox.warning(self, t("Шёпот"), t("Не удалось изменить автозапуск: {error}", error=exc))
+        return True

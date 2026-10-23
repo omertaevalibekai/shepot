@@ -25,6 +25,8 @@ import sys
 import threading
 from ctypes import wintypes
 
+from .i18n import language, t
+
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _iphlp = ctypes.WinDLL("iphlpapi")
 
@@ -100,7 +102,7 @@ def _has_own_console() -> bool:
 def send(pid: int, text: str, submit: bool = True) -> None:
     """Печатает text в консоль процесса pid и (по умолчанию) жмёт в ней Enter."""
     if not pid:
-        raise SendError("неизвестен процесс сессии")
+        raise SendError(t("неизвестен процесс сессии"))
     if _has_own_console():
         # Шёпот запущен из консоли (исходники, тесты): FreeConsole отвязал бы его от
         # неё навсегда — делаем то же в отдельном процессе без консоли.
@@ -111,14 +113,16 @@ def send(pid: int, text: str, submit: bool = True) -> None:
 def _send_in_helper(pid: int, text: str, submit: bool) -> None:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     code = ("import json,sys;from shepot.claude_reply import _send_here,SendError\n"
-            "a=json.loads(sys.argv[1])\n"
+            "from shepot.i18n import set_language\n"
+            "a=json.loads(sys.argv[1]);set_language(a.pop())\n"
             "try:\n _send_here(*a)\n"
             "except SendError as e:\n print(e,end='');sys.exit(3)")
-    result = subprocess.run([sys.executable, "-c", code, json.dumps([pid, text, submit])],
-                            cwd=root, capture_output=True, text=True, encoding="utf-8",
-                            creationflags=DETACHED_PROCESS, timeout=15)
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    result = subprocess.run([sys.executable, "-c", code, json.dumps([pid, text, submit, language()])],
+                            cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            env=env, creationflags=DETACHED_PROCESS, timeout=15)
     if result.returncode:
-        raise SendError(result.stdout.strip() or result.stderr.strip()[-300:] or "помощник упал")
+        raise SendError(result.stdout.strip() or result.stderr.strip()[-300:] or t("помощник упал"))
 
 
 def _send_here(pid: int, text: str, submit: bool = True) -> None:
@@ -128,20 +132,20 @@ def _send_here(pid: int, text: str, submit: bool = True) -> None:
     with _lock:
         _k32.FreeConsole()                            # своей консоли у Шёпота нет, но вдруг
         if not _k32.AttachConsole(pid):
-            raise SendError(f"не подключиться к консоли процесса {pid} "
-                            f"(ошибка {ctypes.get_last_error()})")
+            raise SendError(t("не подключиться к консоли процесса {pid} (ошибка {code})",
+                              pid=pid, code=ctypes.get_last_error()))
         _k32.SetConsoleCtrlHandler(None, True)        # Ctrl+C из той консоли нас не касается
         try:
             handle = _k32.CreateFileW("CONIN$", GENERIC_READ | GENERIC_WRITE,
                                       FILE_SHARE_READ | FILE_SHARE_WRITE, None, OPEN_EXISTING, 0, None)
             if handle in (None, INVALID_HANDLE):
-                raise SendError("у консоли нет ввода")
+                raise SendError(t("у консоли нет ввода"))
             try:
                 array = (_InputRecord * len(batch))(*batch)
                 written = wintypes.DWORD()
                 if not _k32.WriteConsoleInputW(handle, array, len(batch), ctypes.byref(written)) \
                         or written.value != len(batch):
-                    raise SendError(f"консоль приняла {written.value} из {len(batch)} событий")
+                    raise SendError(t("консоль приняла {done} из {total} событий", done=written.value, total=len(batch)))
             finally:
                 _k32.CloseHandle(handle)
         finally:

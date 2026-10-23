@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import inserter
+from .i18n import t
 
 MODE_TITLES = {"clean": "чистовик", "raw": "как есть", "translate": "перевод", "edit": "правка",
                "claude": "ответ Claude"}
@@ -22,7 +23,7 @@ class HistoryDialog(QDialog):
     def __init__(self, history, parent=None) -> None:
         super().__init__(parent)
         self.history = history
-        self.setWindowTitle("Шёпот — история")
+        self.setWindowTitle(t("Шёпот — история"))
         self.resize(640, 460)
 
         layout = QVBoxLayout(self)
@@ -36,11 +37,11 @@ class HistoryDialog(QDialog):
         layout.addWidget(self.preview, 2)
 
         buttons = QHBoxLayout()
-        copy_button = QPushButton("Скопировать")
+        copy_button = QPushButton(t("Скопировать"))
         copy_button.clicked.connect(self._copy)
-        clear_button = QPushButton("Очистить историю")
+        clear_button = QPushButton(t("Очистить историю"))
         clear_button.clicked.connect(self._clear)
-        close_button = QPushButton("Закрыть")
+        close_button = QPushButton(t("Закрыть"))
         close_button.clicked.connect(self.accept)
         buttons.addWidget(copy_button)
         buttons.addWidget(clear_button)
@@ -55,7 +56,7 @@ class HistoryDialog(QDialog):
         self.preview.clear()
         for entry in self.history.items():
             when = entry.get("at", "").replace("T", " ")
-            mode = MODE_TITLES.get(entry.get("mode", ""), entry.get("mode", ""))
+            mode = t(MODE_TITLES.get(entry.get("mode", ""), entry.get("mode", "")))
             preview = " ".join(entry.get("text", "").split())[:70]
             item = QListWidgetItem(f"{when}  ·  {mode}  ·  {preview}")
             item.setData(256, entry.get("text", ""))

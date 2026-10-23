@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from . import hud
 from .claude_bridge import Bridge, Permission
 from .island_place import PLACE, Dragger
+from .i18n import t
 
 COLORS = {"think": QColor(217, 119, 87), "wait": QColor(255, 196, 92), "ask": QColor(165, 139, 255),
           "done": QColor(48, 209, 88), "idle": QColor(110, 114, 128)}
@@ -102,9 +103,9 @@ class ClaudeIsland(QWidget):
         self.code.setTextInteractionFlags(Qt.TextSelectableByMouse)
         mono = QFont("Consolas"); mono.setPointSizeF(10)
         self.code.setFont(mono)
-        self.allow_btn = QPushButton("Разрешить   Enter", objectName="allow")
-        self.deny_btn = QPushButton("Отказать   Esc")
-        self.always_btn = QPushButton("Всегда так")
+        self.allow_btn = QPushButton(t("Разрешить") + "   Enter", objectName="allow")
+        self.deny_btn = QPushButton(t("Отказать") + "   Esc")
+        self.always_btn = QPushButton(t("Всегда так"))
         for b in (self.allow_btn, self.deny_btn, self.always_btn):
             b.setCursor(Qt.PointingHandCursor)
             b.setFocusPolicy(Qt.NoFocus)
@@ -128,7 +129,7 @@ class ClaudeIsland(QWidget):
         if self._request is not None and not self._request.done.is_set():
             return                          # покажем следующую, когда решат текущую
         self._request = request
-        self.head.setText(f"{request.session_name}  хочет выполнить")
+        self.head.setText(request.session_name + "  " + t("хочет выполнить"))
         self.tool.setText(request.tool)
         summary = request.summary or request.tool
         self.code.setText(summary if len(summary) <= 280 else summary[:277] + "…")
@@ -196,7 +197,7 @@ class ClaudeIsland(QWidget):
 
     def _done_text(self) -> str:
         name, line, _ = self._done
-        return f"{name} · готово"
+        return f"{name} · " + t("готово")
 
     # ------------------------------------------------------------- кадр
     def _tick(self) -> None:
@@ -306,7 +307,7 @@ class ClaudeIsland(QWidget):
         cy = rect.center().y()
         self._mark(p, rect.topLeft() + QRectF(0, 0, 40, rect.height()).center(), lead.state)
         waiting = lead.state in ("wait", "ask")
-        text = f"{lead.name} " + ("ждёт тебя" if waiting else STATE_TEXT[lead.state])
+        text = f"{lead.name} " + (t("ждёт тебя") if waiting else t(STATE_TEXT[lead.state]))
         p.setFont(self._font); p.setPen(QColor(255, 255, 255))
         fm = QFontMetricsF(self._font)
         text = fm.elidedText(text, Qt.ElideRight, rect.width() - 150)
@@ -329,7 +330,8 @@ class ClaudeIsland(QWidget):
             p.setFont(self._font); p.setPen(QColor(255, 255, 255))
             p.drawText(QRectF(row.left() + 30, row.top() + 5, row.width() - 100, 20), Qt.AlignLeft | Qt.AlignVCenter, s.name)
             p.setFont(self._small); p.setPen(QColor(255, 255, 255, 128))
-            detail = f"{STATE_TEXT[s.state]} · {s.action}" if s.action and s.action != STATE_TEXT[s.state] else STATE_TEXT[s.state]
+            state = t(STATE_TEXT[s.state])
+            detail = f"{state} · {s.action}" if s.action and s.action != state else state
             detail = QFontMetricsF(self._small).elidedText(detail, Qt.ElideRight, row.width() - 100)
             p.drawText(QRectF(row.left() + 30, row.top() + 24, row.width() - 100, 18), Qt.AlignLeft | Qt.AlignVCenter, detail)
             if s.state == "think":

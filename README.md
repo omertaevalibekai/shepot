@@ -26,6 +26,7 @@ dictation works in ~99 languages.
 | **Engines** | OpenAI cloud or local faster-whisper with no internet |
 | **Insertion** | Via the clipboard, by simulated typing, or copy only |
 | **History** | Recent dictations, in case the text didn't make it to the window |
+| **Interface** | English or Russian, follows Windows by default; switch it in Settings → General |
 | **Live transcription** | Long dictation is cut at pauses and transcribed while you speak, so the text lands almost as soon as you stop |
 | **Window context** | Optional, off by default: names and terms from the window you dictate into are spelled right the first time |
 | **Stats** | Words dictated, time saved, streak, a 30-day chart; copy it as a picture to share |
@@ -37,7 +38,7 @@ dictation works in ~99 languages.
 
 <table>
 <tr>
-<td width="55%"><img src="docs/img/settings.png" alt="Settings window: API keys, hotkeys, text processing"></td>
+<td width="55%"><img src="docs/img/settings.png" alt="Settings window: sections on the left, grouped options on the right"></td>
 <td><img src="docs/img/history.png" alt="Dictation history"></td>
 </tr>
 <tr>

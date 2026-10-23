@@ -9,6 +9,8 @@ import wave
 import numpy as np
 import pyaudio
 
+from .i18n import t
+
 RATE = 16_000
 CHANNELS = 1
 SAMPLE_WIDTH = 2          # 16 бит
@@ -24,7 +26,7 @@ def list_input_devices() -> list[tuple[int, str]]:
         for i in range(pa.get_device_count()):
             info = pa.get_device_info_by_index(i)
             if int(info.get("maxInputChannels", 0)) > 0:
-                devices.append((i, str(info.get("name", f"Устройство {i}"))))
+                devices.append((i, str(info.get("name", t("Устройство {n}", n=i)))))
     finally:
         pa.terminate()
     return devices
