@@ -17,16 +17,23 @@ import ctypes
 import threading
 import time
 
-import keyboard
 import win32clipboard
 import win32con
 
 _u32 = ctypes.windll.user32
+_u32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+_u32.GetAsyncKeyState.restype = ctypes.c_short
+_u32.MapVirtualKeyW.argtypes = [ctypes.c_uint, ctypes.c_uint]
 
-_MODIFIERS = ("ctrl", "shift", "alt", "windows", "right ctrl", "right shift", "right alt")
+# левые и правые Shift, Ctrl, Alt и обе Win
+_MODIFIER_VKS = (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C)
+_EXTENDED_VKS = {0xA3, 0xA5, 0x5B, 0x5C}          # правые Ctrl/Alt и Win — расширенные клавиши
 
+KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
+MAPVK_VK_TO_VSC = 0
+VK_CONTROL, VK_V = 0x11, 0x56
 VK_RETURN = 0x0D
 INPUT_KEYBOARD = 1
 MAX_EVENTS_PER_CALL = 400
@@ -111,9 +118,11 @@ def _unicode_event(code_unit: int, up: bool) -> _Input:
 
 
 def _vk_event(vk: int, up: bool) -> _Input:
-    flags = KEYEVENTF_KEYUP if up else 0
+    # скан-код рядом с виртуальной клавишей: часть программ смотрит только на него
+    flags = (KEYEVENTF_KEYUP if up else 0) | (KEYEVENTF_EXTENDEDKEY if vk in _EXTENDED_VKS else 0)
+    scan = _u32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)
     return _Input(type=INPUT_KEYBOARD,
-                  ki=_KeyboardInput(wVk=vk, wScan=0, dwFlags=flags,
+                  ki=_KeyboardInput(wVk=vk, wScan=scan, dwFlags=flags,
                                     time=0, dwExtraInfo=None))
 
 
@@ -171,11 +180,14 @@ def _utf16_units(char: str) -> list[int]:
 
 def _release_modifiers() -> None:
     """Снимает залипшие модификаторы горячей клавиши перед отправкой Ctrl+V."""
-    for key in _MODIFIERS:
-        try:
-            keyboard.release(key)
-        except Exception:
-            pass
+    held = [vk for vk in _MODIFIER_VKS if _u32.GetAsyncKeyState(vk) & 0x8000]
+    _send([_vk_event(vk, True) for vk in held])
+
+
+def send_paste() -> None:
+    """Ctrl+V одним вызовом SendInput: нажатия не перемешаются с чужими."""
+    _send([_vk_event(VK_CONTROL, False), _vk_event(VK_V, False),
+           _vk_event(VK_V, True), _vk_event(VK_CONTROL, True)])
 
 
 def _restore_clipboard_later(previous: str, delay: float) -> None:
@@ -224,7 +236,7 @@ def insert(
     time.sleep(0.05)
     _release_modifiers()
     try:
-        keyboard.send("ctrl+v")
+        send_paste()
     except Exception:
         return False
 

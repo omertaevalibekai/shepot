@@ -1,0 +1,61 @@
+# Тесты на каждый PR и push в main; сборка Shepot.exe и релиз на тег vX.Y.Z.
+#
+#   git tag v1.3.0 && git push origin v1.3.0
+#
+# Описание релиза берётся из docs/releases/<тег>.md, если файл есть.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q tests
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt pyinstaller
+
+      - name: Версия в коде совпадает с тегом
+        shell: bash
+        run: |
+          code=$(python -c "import shepot; print(shepot.__version__)")
+          [ "v$code" = "$GITHUB_REF_NAME" ] || { echo "shepot.__version__ = $code, тег $GITHUB_REF_NAME"; exit 1; }
+
+      - run: python tools/build_exe.py
+
+      - name: Архив
+        run: python -c "import shutil; shutil.make_archive('Shepot-windows-x64', 'zip', 'dist', 'Shepot')"
+
+      - name: Релиз
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="docs/releases/$GITHUB_REF_NAME.md"
+          if [ -f "$notes" ]; then flag=(--notes-file "$notes"); else flag=(--generate-notes); fi
+          gh release create "$GITHUB_REF_NAME" Shepot-windows-x64.zip \
+            --title "Шёпот ${GITHUB_REF_NAME#v}" "${flag[@]}"

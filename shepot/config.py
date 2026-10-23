@@ -71,6 +71,8 @@ DEFAULTS: dict = {
     "play_sounds": True,
     "history_limit": 200,
     "autostart": False,
+    "check_updates": True,         # раз в сутки спрашивать GitHub о новой версии
+    "update_notified": "",         # о какой версии уже сказали всплывашкой
 }
 
 

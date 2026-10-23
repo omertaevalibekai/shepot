@@ -7,11 +7,16 @@ import time
 import winsound
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QObject, Qt, QRectF, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QAction, QActionGroup, QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap,
+)
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import audio, clipshot, ghost, hotkeys, inserter, island_place, jump, learn, polish, providers, selection, stt
+from . import (
+    audio, clipshot, ghost, hotkeys, inserter, island_place, jump, learn, polish, providers,
+    selection, stt, updates,
+)
 from .config import Config
 from .history import History
 from .history_ui import HistoryDialog
@@ -174,6 +179,9 @@ class Controller(QObject):
         if not self.claude_bridge.start():
             _log_edit({"claude_bridge": self.claude_bridge.error})
         self._sync_claude_island()
+        self.updates = updates.Checker(parent=self)
+        self.updates.found.connect(self._update_found)
+        self.updates.set_enabled(bool(self.cfg.get("check_updates")))
         self._warm_up()
         # первый запуск: без ключа диктовать нечем — сразу открываем настройки
         QTimer.singleShot(500, self._prompt_for_key_if_needed)
@@ -192,6 +200,13 @@ class Controller(QObject):
     # ------------------------------------------------------------------ трей
     def _build_menu(self) -> None:
         menu = QMenu()
+
+        # пункт появляется, только когда на GitHub есть версия новее
+        self.update_action = QAction("", menu)
+        self.update_action.setVisible(False)
+        self.update_action.triggered.connect(self._open_update)
+        menu.addAction(self.update_action)
+        self._update_url = updates.RELEASES_URL
 
         self.dictate_action = QAction("Начать диктовку", menu)
         self.dictate_action.triggered.connect(self.toggle_dictation)
@@ -288,6 +303,19 @@ class Controller(QObject):
         if changed and self.cfg.get("hud"):
             message = "Скриншоты в терминал" if enabled else "Перехват скриншотов выключен"
             self.hud.show_state("done", message, hide_after=1.4)
+
+    def _update_found(self, version: str, url: str) -> None:
+        self._update_url = url
+        self.update_action.setText(f"Скачать версию {version}")
+        self.update_action.setVisible(True)
+        if self.cfg.get("update_notified") != version:        # всплывашка — один раз на версию
+            self.cfg.set("update_notified", version)
+            self.cfg.save()
+            self.tray.showMessage(APP_TITLE, f"Вышла версия {version}. Скачать — в меню значка.",
+                                  QSystemTrayIcon.Information, 6000)
+
+    def _open_update(self) -> None:
+        QDesktopServices.openUrl(QUrl(self._update_url))
 
     def _report_screenshot(self, _path: str) -> None:
         if self.cfg.get("hud"):
@@ -692,6 +720,7 @@ class Controller(QObject):
             action.setChecked(action.data() == self.cfg.get("tone"))
         self.set_clipshot(bool(self.cfg.get("clipshot")))
         self.ghost.set_enabled(bool(self.cfg.get("ghost")))
+        self.updates.set_enabled(bool(self.cfg.get("check_updates")))
         self._sync_claude_island()
         self._update_tooltip()
 

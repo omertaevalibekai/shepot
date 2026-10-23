@@ -1,7 +1,6 @@
 PySide6>=6.6
 PyAudio>=0.2.14
 numpy>=1.26
-keyboard>=0.13.5
 pywin32>=306
 openai>=1.40
 
