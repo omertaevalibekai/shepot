@@ -15,6 +15,9 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONUTF8: "1"           # консоль раннера в cp1252: без этого падает первый же print по-русски
+
 jobs:
   test:
     runs-on: windows-latest
