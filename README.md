@@ -254,6 +254,16 @@ When Claude Code asks for permission, a card with the command and **Allow /
 Deny / Always** buttons ("Разрешить / Отказать / Всегда так") appears (`Enter` and `Esc` once the card is clicked).
 If there's no answer within 60 s, Claude Code asks in the terminal as usual.
 
+**Reply by voice.** Press `Ctrl+Alt+Space`, speak, press it again: the text goes
+to the terminal of the session that is waiting for an answer or has just
+finished, and is sent as if you had typed it and pressed Enter. No need to
+switch windows; the terminal can be minimized or in another tab. While
+recording, the island shows which session you're replying to. Shepot writes the
+text straight into that session's console input (`WriteConsoleInput`), so no
+keystrokes reach other windows and the clipboard isn't touched. If sending
+fails, the text is left on the clipboard. The key can be changed in Settings →
+"Claude Code".
+
 To connect, open Settings → "Claude Code" → "Подключить к Claude Code"
 (connect). This adds Shepot's hooks to `~/.claude/settings.json`, keeping a
 backup next to it and leaving other hooks alone; "Отключить" removes them.

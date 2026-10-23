@@ -55,6 +55,8 @@ DEFAULTS: dict = {
     "voice_edit": True,            # есть выделение → речь считается командой правки
     # --- Claude Code ---
     "claude_island": True,         # показывать сессии Claude Code в острове (нужны хуки)
+    "claude_reply": True,          # своя клавиша — голосовой ответ сессии Claude Code
+    "claude_reply_hotkey": "ctrl+alt+space",
     # --- окна и проекты ---
     "ghost": True,                 # Alt + колесо над окном — прозрачность
     "jump": True,                  # горячая клавиша — поиск проекта и его рабочее место

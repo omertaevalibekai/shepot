@@ -708,6 +708,19 @@ class SettingsDialog(QDialog):
         self.claude_island.setChecked(bool(self.cfg.get("claude_island")))
         form.addRow("", self.claude_island)
 
+        self.claude_reply = QCheckBox("Отвечать сессии голосом")
+        self.claude_reply.setChecked(bool(self.cfg.get("claude_reply")))
+        self.claude_reply.setToolTip(
+            "Нажмите клавишу ответа, продиктуйте и нажмите ещё раз: текст уйдёт в терминал\n"
+            "сессии, которая ждёт ответа или только что закончила, и отправится Enter.\n"
+            "Окно переключать не нужно. Нужны подключённые хуки."
+        )
+        self.claude_reply_capture = KeyCapture(self.cfg.get("claude_reply_hotkey") or "ctrl+alt+space")
+        row = QHBoxLayout()
+        row.addWidget(self.claude_reply)
+        row.addWidget(self.claude_reply_capture, 1)
+        form.addRow("Ответ голосом", row)
+
         self.claude_status = QLabel()
         self.claude_status.setWordWrap(True)
         self.claude_connect = QPushButton()
@@ -907,6 +920,8 @@ class SettingsDialog(QDialog):
                 "restore_delay": self.restore_delay.value(),
                 "clipshot": self.clipshot.isChecked(),
                 "claude_island": self.claude_island.isChecked(),
+                "claude_reply": self.claude_reply.isChecked(),
+                "claude_reply_hotkey": self.claude_reply_capture.value() or "ctrl+alt+space",
                 "ghost": self.ghost.isChecked(),
                 "check_updates": self.check_updates.isChecked(),
                 "jump": self.jump.isChecked(),

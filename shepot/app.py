@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import (
     audio, clipshot, ghost, hotkeys, inserter, island_place, jump, learn, polish, providers,
-    context, live, selection, stats, stt, updates,
+    claude_reply, context, live, selection, stats, stt, updates,
 )
 from .config import Config
 from .history import History
@@ -102,6 +102,9 @@ class Controller(QObject):
     editReady = Signal(str)
     termsLearned = Signal(list)
     requestJump = Signal()
+    requestReply = Signal()
+    replySent = Signal(str)
+    replyFailed = Signal(str)
     jumpStep = Signal(str)
     jumpDone = Signal(int)
 
@@ -135,6 +138,17 @@ class Controller(QObject):
         self._live: live.LiveTranscriber | None = None
         self._ctx: tuple[dict, threading.Event] = ({"ctx": context.WindowContext()}, threading.Event())
         self._stopped_at = 0.0
+        # голосовой ответ Claude Code: кому отвечаем в этой записи и в обработке
+        self._reply = None
+        self._job_reply = None
+        self.reply_keys = HotkeyManager(
+            on_press=self.requestReply.emit,
+            on_release=self.requestFinish.emit,
+            on_cancel=self.requestCancel.emit,
+        )
+        self.requestReply.connect(self.start_reply)
+        self.replySent.connect(self._reply_sent)
+        self.replyFailed.connect(self._reply_failed)
         self._last_insert: tuple[int, str, float] | None = None
         self.edit_panel = EditPanel()
         self._settings_dialog: SettingsDialog | None = None
@@ -352,6 +366,7 @@ class Controller(QObject):
             return False
         finally:
             self._apply_jump_key(announce)
+            self._apply_reply_key(announce)
         self._update_tooltip()
         return True
 
@@ -368,6 +383,40 @@ class Controller(QObject):
                 QMessageBox.warning(None, APP_TITLE, f"Не удалось назначить клавишу прыжка: {exc}")
             return
         self.jump_action.setText(f"Прыжок в проект…\t{hotkeys.display(key)}")
+
+    def _apply_reply_key(self, announce: bool) -> None:
+        if not self.cfg.get("claude_reply"):
+            self.reply_keys.stop()
+            return
+        key = self.cfg.get("claude_reply_hotkey") or "ctrl+alt+space"
+        try:
+            self.reply_keys.apply(key, "toggle", self.cfg.get("cancel_key"))
+        except Exception as exc:
+            _log_edit({"claude_reply_hotkey": str(exc)})
+            if announce:
+                QMessageBox.warning(None, APP_TITLE, f"Не удалось назначить клавишу ответа Claude: {exc}")
+
+    def _notify_keys_stopped(self) -> None:
+        self.hotkeys.notify_stopped()
+        self.reply_keys.notify_stopped()
+
+    # ------------------------------------------------------- ответ Claude Code
+    def start_reply(self) -> None:
+        """Клавиша ответа: диктовка уйдёт не в активное окно, а в терминал сессии Claude Code."""
+        if self._busy or self.recorder.is_recording or self.edit_panel.isVisible():
+            self.reply_keys.notify_stopped()
+            return
+        target = self.claude_bridge.reply_target()
+        if target is None:
+            self.reply_keys.notify_stopped()
+            if self.cfg.get("hud"):
+                self.hud.show_state("error", "Нет сессии Claude Code для ответа", hide_after=2.2)
+            return
+        self._reply = target
+        self.start_dictation()
+        if not self.recorder.is_recording:
+            self._reply = None
+            self.reply_keys.notify_stopped()
 
     # ------------------------------------------------------------ прыжок
     def open_jump(self) -> None:
@@ -471,11 +520,12 @@ class Controller(QObject):
         if self.cfg.get("play_sounds"):
             _beep(880, 55)
         if self.cfg.get("hud"):
-            self.hud.show_state("listening")
+            self.hud.show_state("listening", f"→ {self._reply.name}" if self._reply else "")
         # Запись идёт сразу, чтобы не потерять первые слова. Параллельно смотрим,
         # нет ли выделения: если есть — это не диктовка, а правка, запись отменяем.
         self._selection = None
-        if self.cfg.get("voice_edit"):
+        self._selection_ready.set()
+        if self.cfg.get("voice_edit") and self._reply is None:
             self._selection_ready.clear()
             threading.Thread(target=self._grab_selection, daemon=True,
                              name="shepot-selection").start()
@@ -485,7 +535,7 @@ class Controller(QObject):
         snapshot = _Snapshot(self.cfg.as_dict())
         holder, ready = {"ctx": context.WindowContext()}, threading.Event()
         self._ctx = (holder, ready)
-        if snapshot.get("window_context"):
+        if snapshot.get("window_context") and self._reply is None:   # ответ Claude — не в это окно
             app, hwnd = self._target_app, self._target_window
 
             def grab() -> None:
@@ -533,7 +583,7 @@ class Controller(QObject):
     def _open_edit_panel(self, text: str) -> None:
         if self.recorder.is_recording:
             self.recorder.cancel()
-            self.hotkeys.notify_stopped()
+            self._notify_keys_stopped()
         self._drop_live()
         self._busy = False                            # короткое удержание уже ушло в _process — он отступит
         self.tray.setIcon(make_icon(IDLE_COLOR))
@@ -598,7 +648,8 @@ class Controller(QObject):
         self._stopped_at = time.monotonic()
         self.recorder.on_block = None
         live_job, self._live = self._live, None
-        self.hotkeys.notify_stopped()
+        self._job_reply, self._reply = self._reply, None
+        self._notify_keys_stopped()
         self.tray.setIcon(make_icon(BUSY_COLOR))
         if self.cfg.get("play_sounds"):
             _beep(660, 55)
@@ -632,7 +683,8 @@ class Controller(QObject):
             return
         self.recorder.cancel()
         self._drop_live()
-        self.hotkeys.notify_stopped()
+        self._reply = None
+        self._notify_keys_stopped()
         self.tray.setIcon(make_icon(IDLE_COLOR))
         self.hud.hide_now()
 
@@ -673,7 +725,11 @@ class Controller(QObject):
                 self.hud.show_state("done", "Ничего не распознано", hide_after=1.6)
             return
 
-        self.history.add(text, self.cfg.get("mode"), seconds)
+        reply = self._job_reply
+        self.history.add(text, "claude" if reply else self.cfg.get("mode"), seconds)
+        if reply is not None:
+            self._send_reply(reply, text, seconds)
+            return
 
         # вставка спит между нажатиями — уводим её с потока интерфейса,
         # иначе индикатор замирает на время доставки
@@ -695,6 +751,30 @@ class Controller(QObject):
             self.inserted.emit(ok)
 
         threading.Thread(target=deliver, daemon=True, name="shepot-insert").start()
+
+    def _send_reply(self, session, text: str, seconds: float) -> None:
+        def deliver() -> None:
+            try:
+                claude_reply.send(session.pid, text)
+            except Exception as exc:
+                inserter.set_clipboard_text(text)    # не потерять продиктованное
+                self.replyFailed.emit(f"Не отправил в {session.name}: {exc}. Текст в буфере")
+                return
+            self.claude_bridge.replied(session)
+            self.stats.record(stats.count_words(text), seconds,
+                              wait=time.monotonic() - self._stopped_at, app="claude code")
+            self.replySent.emit(session.name)
+
+        threading.Thread(target=deliver, daemon=True, name="shepot-claude-reply").start()
+
+    def _reply_sent(self, name: str) -> None:
+        self._job_reply = None
+        if self.cfg.get("hud"):
+            self.hud.show_state("done", f"Ответ ушёл: {name}", hide_after=1.6)
+
+    def _reply_failed(self, message: str) -> None:
+        self._job_reply = None
+        self._show_error(message)
 
     # ------------------------------------------------------- обучение словаря
     def _check_learning(self) -> None:
@@ -769,6 +849,7 @@ class Controller(QObject):
         self.cancel_dictation()
         self.hotkeys.stop()                    # чтобы поле записи клавиш не срабатывало
         self.jump_keys.stop()
+        self.reply_keys.stop()
         dialog = SettingsDialog(self.cfg, focus_keys=focus_keys)
         self._settings_dialog = dialog
         accepted = dialog.exec()
@@ -826,6 +907,7 @@ class Controller(QObject):
         self.clipshot.set_enabled(False)
         self.hotkeys.stop()
         self.jump_keys.stop()
+        self.reply_keys.stop()
         self.ghost.stop()                      # помощник вернёт окна непрозрачными
         self.claude_bridge.stop()
         self.recorder.close()

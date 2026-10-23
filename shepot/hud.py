@@ -46,6 +46,7 @@ LABELS = {
     "error": "Ошибка",
 }
 LISTENING_W = 250.0
+REPLY_COLOR = QColor(165, 139, 255)   # как «ждёт ответа» в острове Claude Code
 RECORDING = ("listening",)
 
 
@@ -186,6 +187,9 @@ class Hud(QWidget):
         if self._leaving_at:
             return DOT_W
         if self._state in RECORDING:
+            if self._message:                          # «→ сессия»: ответ Claude Code голосом
+                text = QFontMetricsF(self._font).horizontalAdvance(self._message)
+                return min(MAX_W, LISTENING_W + text + 16.0)
             return LISTENING_W
         width = QFontMetricsF(self._font).horizontalAdvance(self._label()) + 62.0
         if self._hint:
@@ -313,6 +317,14 @@ class Hud(QWidget):
         painter.setPen(accent)
         painter.drawText(QRectF(rect.left() + 34, rect.top(), 60, rect.height()),
                          Qt.AlignVCenter | Qt.AlignLeft, f"{seconds // 60}:{seconds % 60:02d}")
+
+        if self._message:
+            room = rect.width() - (LISTENING_W - 10)
+            painter.setFont(self._font)
+            painter.setPen(REPLY_COLOR)
+            text = QFontMetricsF(self._font).elidedText(self._message, Qt.ElideRight, room)
+            painter.drawText(QRectF(rect.left() + 82, rect.top(), room, rect.height()),
+                             Qt.AlignVCenter | Qt.AlignLeft, text)
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(255, 255, 255))
