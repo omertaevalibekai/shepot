@@ -9,13 +9,13 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QRectF, QTimer, QUrl, Signal
 from PySide6.QtGui import (
-    QAction, QActionGroup, QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap,
+    QAction, QActionGroup, QColor, QDesktopServices, QIcon, QPainter, QPixmap,
 )
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from . import (
     audio, clipshot, ghost, hotkeys, inserter, island_place, jump, learn, polish, providers,
-    context, live, selection, stats, stt, updates,
+    claude_reply, context, live, logo, selection, stats, stt, updates,
 )
 from .config import Config
 from .history import History
@@ -27,7 +27,8 @@ from .claude_island import ClaudeIsland
 from .edit_panel import EditPanel
 from .jump_panel import JumpPanel
 from .hud import Hud
-from .settings_ui import MODE_LABELS, TONE_LABELS, SettingsDialog
+from .i18n import language, set_language, t
+from .settings_ui import SettingsDialog, mode_labels, tone_labels
 
 APP_TITLE = "Шёпот"
 
@@ -36,28 +37,17 @@ APP_TITLE = "Шёпот"
 LEARN_CHECKS_MS = (20_000, 60_000)
 LEARN_WINDOW_S = 600
 
-IDLE_COLOR = QColor(210, 214, 224)
-ACTIVE_COLOR = QColor(96, 205, 255)
-BUSY_COLOR = QColor(255, 196, 92)
+IDLE_COLOR = QColor(76, 155, 255)       # курсор знака: ждёт
+ACTIVE_COLOR = QColor(255, 159, 10)     # пишет — оранжевый, как лампа острова
+BUSY_COLOR = QColor(255, 214, 10)       # обрабатывает
 
 
 def make_icon(color: QColor) -> QIcon:
-    """Рисует иконку микрофона, чтобы не тащить бинарные ресурсы."""
+    """Знак Шёпота для трея; курсор окрашен по состоянию."""
     pixmap = QPixmap(64, 64)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-
-    painter.setPen(Qt.NoPen)
-    painter.setBrush(color)
-    painter.drawRoundedRect(QRectF(24, 9, 16, 29), 8, 8)
-
-    pen = QPen(color, 5)
-    pen.setCapStyle(Qt.RoundCap)
-    painter.setPen(pen)
-    painter.setBrush(Qt.NoBrush)
-    painter.drawArc(QRectF(16, 18, 32, 30), 180 * 16, 180 * 16)
-    painter.drawLine(32, 48, 32, 56)
+    logo.draw(painter, QRectF(0, 0, 64, 64), caret=color)
     painter.end()
     return QIcon(pixmap)
 
@@ -102,6 +92,9 @@ class Controller(QObject):
     editReady = Signal(str)
     termsLearned = Signal(list)
     requestJump = Signal()
+    requestReply = Signal()
+    replySent = Signal(str)
+    replyFailed = Signal(str)
     jumpStep = Signal(str)
     jumpDone = Signal(int)
 
@@ -109,6 +102,7 @@ class Controller(QObject):
         super().__init__()
         self.app = app
         self.cfg = Config()
+        set_language(self.cfg.get("ui_language"))
         island_place.PLACE.bind(self.cfg)          # остров помнит, куда его перетащили
         self.history = History(int(self.cfg.get("history_limit")))
         self.stats = stats.Stats(history_items=self.history.items())
@@ -135,6 +129,17 @@ class Controller(QObject):
         self._live: live.LiveTranscriber | None = None
         self._ctx: tuple[dict, threading.Event] = ({"ctx": context.WindowContext()}, threading.Event())
         self._stopped_at = 0.0
+        # голосовой ответ Claude Code: кому отвечаем в этой записи и в обработке
+        self._reply = None
+        self._job_reply = None
+        self.reply_keys = HotkeyManager(
+            on_press=self.requestReply.emit,
+            on_release=self.requestFinish.emit,
+            on_cancel=self.requestCancel.emit,
+        )
+        self.requestReply.connect(self.start_reply)
+        self.replySent.connect(self._reply_sent)
+        self.replyFailed.connect(self._reply_failed)
         self._last_insert: tuple[int, str, float] | None = None
         self.edit_panel = EditPanel()
         self._settings_dialog: SettingsDialog | None = None
@@ -198,8 +203,8 @@ class Controller(QObject):
         if providers.missing_key(self.cfg) is None:
             return
         self.tray.showMessage(
-            APP_TITLE,
-            "Вставьте ключ API, и можно диктовать.",
+            t(APP_TITLE),
+            t("Вставьте ключ API, и можно диктовать."),
             QSystemTrayIcon.Information,
             5000,
         )
@@ -214,40 +219,44 @@ class Controller(QObject):
         self.update_action.setVisible(False)
         self.update_action.triggered.connect(self._open_update)
         menu.addAction(self.update_action)
-        self._update_url = updates.RELEASES_URL
+        if getattr(self, "_update_version", ""):           # меню собирают заново при смене языка
+            self.update_action.setText(t("Скачать версию {version}", version=self._update_version))
+            self.update_action.setVisible(True)
+        else:
+            self._update_url = updates.RELEASES_URL
 
-        self.dictate_action = QAction("Начать диктовку", menu)
+        self.dictate_action = QAction(t("Начать диктовку"), menu)
         self.dictate_action.triggered.connect(self.toggle_dictation)
         menu.addAction(self.dictate_action)
 
-        self.clipshot_action = QAction("Скриншоты в терминал", menu, checkable=True)
+        self.clipshot_action = QAction(t("Скриншоты в терминал"), menu, checkable=True)
         self.clipshot_action.setChecked(bool(self.cfg.get("clipshot")))
         self.clipshot_action.setToolTip(
-            "Win+Shift+S — и Ctrl+V вставит путь к снимку вместо картинки"
+            t("Win+Shift+S — и Ctrl+V вставит путь к снимку вместо картинки")
         )
         self.clipshot_action.toggled.connect(self.set_clipshot)
         menu.addAction(self.clipshot_action)
 
-        self.jump_action = QAction("Прыжок в проект…", menu)
+        self.jump_action = QAction(t("Прыжок в проект…"), menu)
         self.jump_action.triggered.connect(self.open_jump)
         menu.addAction(self.jump_action)
         menu.addSeparator()
 
-        mode_menu = menu.addMenu("Режим")
+        mode_menu = menu.addMenu(t("Режим"))
         self._mode_group = QActionGroup(menu)
         self._mode_group.setExclusive(True)
-        for value, label in MODE_LABELS:
-            action = QAction(label.split(" — ")[0], menu, checkable=True)
+        for value, label in mode_labels():
+            action = QAction(label, menu, checkable=True)
             action.setData(value)
             action.setChecked(self.cfg.get("mode") == value)
             action.triggered.connect(lambda _c, v=value: self._set("mode", v))
             self._mode_group.addAction(action)
             mode_menu.addAction(action)
 
-        tone_menu = menu.addMenu("Тон")
+        tone_menu = menu.addMenu(t("Тон"))
         self._tone_group = QActionGroup(menu)
         self._tone_group.setExclusive(True)
-        for value, label in TONE_LABELS:
+        for value, label in tone_labels():
             action = QAction(label, menu, checkable=True)
             action.setData(value)
             action.setChecked(self.cfg.get("tone") == value)
@@ -256,40 +265,42 @@ class Controller(QObject):
             tone_menu.addAction(action)
 
         menu.addSeparator()
-        stats_action = QAction("Статистика…", menu)
+        stats_action = QAction(t("Статистика…"), menu)
         stats_action.triggered.connect(self.open_stats)
         menu.addAction(stats_action)
 
-        history_action = QAction("История…", menu)
+        history_action = QAction(t("История…"), menu)
         history_action.triggered.connect(self.open_history)
         menu.addAction(history_action)
 
-        settings_action = QAction("Настройки…", menu)
+        settings_action = QAction(t("Настройки…"), menu)
         settings_action.triggered.connect(lambda: self.open_settings())
         menu.addAction(settings_action)
 
         menu.addSeparator()
-        quit_action = QAction("Выход", menu)
+        quit_action = QAction(t("Выход"), menu)
         quit_action.triggered.connect(self.quit)
         menu.addAction(quit_action)
 
         self.tray.setContextMenu(menu)
         self._menu = menu
+        self._menu_language = language()
         self._update_tooltip()
 
     def _update_tooltip(self) -> None:
-        mode = dict(MODE_LABELS).get(self.cfg.get("mode"), "")
+        mode = dict(mode_labels()).get(self.cfg.get("mode"), "")
         self.tray.setToolTip(
-            f"{APP_TITLE}\n{self._hotkey_hint()}\n{mode}"
+            f"{t(APP_TITLE)}\n{self._hotkey_hint()}\n{mode}"
         )
 
     def _hotkey_hint(self) -> str:
         start = hotkeys.display(self.cfg.get("hotkey"))
         if self.cfg.get("hotkey_mode") == "pair":
-            return f"{start} — начать, {hotkeys.display(self.cfg.get('hotkey_stop'))} — вставить"
+            return t("{start} — начать, {stop} — вставить", start=start,
+                     stop=hotkeys.display(self.cfg.get('hotkey_stop')))
         if self.cfg.get("hotkey_mode") == "ptt":
-            return f"держать {start} — диктовка"
-        return f"{start} — диктовка"
+            return t("держать {start} — диктовка", start=start)
+        return t("{start} — диктовка", start=start)
 
     def _tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.Trigger:
@@ -313,17 +324,17 @@ class Controller(QObject):
             self.clipshot_action.setChecked(enabled)
             self.clipshot_action.blockSignals(False)
         if changed and self.cfg.get("hud"):
-            message = "Скриншоты в терминал" if enabled else "Перехват скриншотов выключен"
+            message = t("Скриншоты в терминал") if enabled else t("Перехват скриншотов выключен")
             self.hud.show_state("done", message, hide_after=1.4)
 
     def _update_found(self, version: str, url: str) -> None:
-        self._update_url = url
-        self.update_action.setText(f"Скачать версию {version}")
+        self._update_url, self._update_version = url, version
+        self.update_action.setText(t("Скачать версию {version}", version=version))
         self.update_action.setVisible(True)
         if self.cfg.get("update_notified") != version:        # всплывашка — один раз на версию
             self.cfg.set("update_notified", version)
             self.cfg.save()
-            self.tray.showMessage(APP_TITLE, f"Вышла версия {version}. Скачать — в меню значка.",
+            self.tray.showMessage(t(APP_TITLE), t("Вышла версия {version}. Скачать — в меню значка.", version=version),
                                   QSystemTrayIcon.Information, 6000)
 
     def _open_update(self) -> None:
@@ -331,7 +342,7 @@ class Controller(QObject):
 
     def _report_screenshot(self, _path: str) -> None:
         if self.cfg.get("hud"):
-            self.hud.show_state("done", "Скрин → путь в буфере", hide_after=1.2)
+            self.hud.show_state("done", t("Скрин → путь в буфере"), hide_after=1.2)
         if self.cfg.get("play_sounds"):
             _beep(1180, 45)
 
@@ -347,11 +358,12 @@ class Controller(QObject):
         except Exception as exc:
             if announce:
                 QMessageBox.warning(
-                    None, APP_TITLE, f"Не удалось назначить горячую клавишу: {exc}"
+                    None, t(APP_TITLE), t("Не удалось назначить горячую клавишу: {error}", error=exc)
                 )
             return False
         finally:
             self._apply_jump_key(announce)
+            self._apply_reply_key(announce)
         self._update_tooltip()
         return True
 
@@ -365,9 +377,43 @@ class Controller(QObject):
         except Exception as exc:
             _log_edit({"jump_hotkey": str(exc)})
             if announce:
-                QMessageBox.warning(None, APP_TITLE, f"Не удалось назначить клавишу прыжка: {exc}")
+                QMessageBox.warning(None, t(APP_TITLE), t("Не удалось назначить клавишу прыжка: {error}", error=exc))
             return
-        self.jump_action.setText(f"Прыжок в проект…\t{hotkeys.display(key)}")
+        self.jump_action.setText(t("Прыжок в проект…") + "\t" + hotkeys.display(key))
+
+    def _apply_reply_key(self, announce: bool) -> None:
+        if not self.cfg.get("claude_reply"):
+            self.reply_keys.stop()
+            return
+        key = self.cfg.get("claude_reply_hotkey") or "ctrl+alt+space"
+        try:
+            self.reply_keys.apply(key, "toggle", self.cfg.get("cancel_key"))
+        except Exception as exc:
+            _log_edit({"claude_reply_hotkey": str(exc)})
+            if announce:
+                QMessageBox.warning(None, t(APP_TITLE), t("Не удалось назначить клавишу ответа Claude: {error}", error=exc))
+
+    def _notify_keys_stopped(self) -> None:
+        self.hotkeys.notify_stopped()
+        self.reply_keys.notify_stopped()
+
+    # ------------------------------------------------------- ответ Claude Code
+    def start_reply(self) -> None:
+        """Клавиша ответа: диктовка уйдёт не в активное окно, а в терминал сессии Claude Code."""
+        if self._busy or self.recorder.is_recording or self.edit_panel.isVisible():
+            self.reply_keys.notify_stopped()
+            return
+        target = self.claude_bridge.reply_target()
+        if target is None:
+            self.reply_keys.notify_stopped()
+            if self.cfg.get("hud"):
+                self.hud.show_state("error", t("Нет сессии Claude Code для ответа"), hide_after=2.2)
+            return
+        self._reply = target
+        self.start_dictation()
+        if not self.recorder.is_recording:
+            self._reply = None
+            self.reply_keys.notify_stopped()
 
     # ------------------------------------------------------------ прыжок
     def open_jump(self) -> None:
@@ -377,7 +423,7 @@ class Controller(QObject):
         root = Path(self.cfg.get("jump_root") or str(jump.default_root()))
         projects = jump.scan(root, self.cfg.get("jump_recent") or {}, self.cfg.get("jump_pinned") or [])
         if not projects:
-            self._show_error(f"Нет проектов в папке {root}")
+            self._show_error(t("Нет проектов в папке {folder}", folder=root))
             return
         self.jump_panel.open(projects, self.cfg.get("jump_options") or {},
                              self.cfg.get("jump_pinned") or [], root.name)
@@ -400,7 +446,7 @@ class Controller(QObject):
             plan = jump.start(project, options, terminal_only,
                               on_step=self.jumpStep.emit, on_done=self.jumpDone.emit)
         except OSError as exc:
-            self._show_error(f"Не открылось: {exc}")
+            self._show_error(t("Не открылось: {error}", error=exc))
             return
         recent = dict(self.cfg.get("jump_recent") or {})
         recent[str(project.path)] = time.time()
@@ -415,10 +461,10 @@ class Controller(QObject):
             return
         if part:
             state["done"].add(part)
-        names = {"code": "VS Code", "terminal": "терминал"}
+        names = {"code": "VS Code", "terminal": t("терминал")}
         steps = [names[p] + (" ✓" if p in state["done"] else " …") for p in state["plan"].parts]
         if state["plan"].web:
-            steps.append("браузер ✓")
+            steps.append(t("браузер") + " ✓")
         message = " · ".join([state["project"].name] + steps)
         self.hud.show_state("processing", message)
 
@@ -428,13 +474,13 @@ class Controller(QObject):
             return
         plan, project = state["plan"], state["project"]
         if not plan.parts:
-            text = f"{project.name} · ничего не отмечено" if not plan.web else f"{project.name} · браузер"
+            text = f"{project.name} · " + (t("ничего не отмечено") if not plan.web else t("браузер"))
         elif "reuse" in (plan.editor, plan.terminal) and "new" not in (plan.editor, plan.terminal):
-            text = f"{project.name} · переключился"
+            text = f"{project.name} · " + t("переключился")
         elif count < len(plan.parts):
-            text = f"{project.name} · открываю дольше обычного"
+            text = f"{project.name} · " + t("открываю дольше обычного")
         else:
-            text = f"{project.name} · {count} " + ("окно готово" if count == 1 else "окна готовы")
+            text = f"{project.name} · " + (t("1 окно готово") if count == 1 else t("{count} окна готовы", count=count))
         self.hud.show_state("done", text, hide_after=2.4, hint=project.branch)
 
     # ------------------------------------------------------------------ поток
@@ -452,7 +498,7 @@ class Controller(QObject):
         if self._busy or self.recorder.is_recording:
             return
         if providers.missing_key(self.cfg) is not None:
-            self._show_error("Не указан ключ API — откройте настройки")
+            self._show_error(t("Не указан ключ API — откройте настройки"))
             self._prompt_for_key_if_needed()
             return
         # окно, в котором человек работал: в него вернём фокус и вставим правку
@@ -471,11 +517,12 @@ class Controller(QObject):
         if self.cfg.get("play_sounds"):
             _beep(880, 55)
         if self.cfg.get("hud"):
-            self.hud.show_state("listening")
+            self.hud.show_state("listening", f"→ {self._reply.name}" if self._reply else "")
         # Запись идёт сразу, чтобы не потерять первые слова. Параллельно смотрим,
         # нет ли выделения: если есть — это не диктовка, а правка, запись отменяем.
         self._selection = None
-        if self.cfg.get("voice_edit"):
+        self._selection_ready.set()
+        if self.cfg.get("voice_edit") and self._reply is None:
             self._selection_ready.clear()
             threading.Thread(target=self._grab_selection, daemon=True,
                              name="shepot-selection").start()
@@ -485,7 +532,7 @@ class Controller(QObject):
         snapshot = _Snapshot(self.cfg.as_dict())
         holder, ready = {"ctx": context.WindowContext()}, threading.Event()
         self._ctx = (holder, ready)
-        if snapshot.get("window_context"):
+        if snapshot.get("window_context") and self._reply is None:   # ответ Claude — не в это окно
             app, hwnd = self._target_app, self._target_window
 
             def grab() -> None:
@@ -533,7 +580,7 @@ class Controller(QObject):
     def _open_edit_panel(self, text: str) -> None:
         if self.recorder.is_recording:
             self.recorder.cancel()
-            self.hotkeys.notify_stopped()
+            self._notify_keys_stopped()
         self._drop_live()
         self._busy = False                            # короткое удержание уже ушло в _process — он отступит
         self.tray.setIcon(make_icon(IDLE_COLOR))
@@ -548,14 +595,14 @@ class Controller(QObject):
         self._busy = True
         self.tray.setIcon(make_icon(BUSY_COLOR))
         if self.cfg.get("hud"):
-            self.hud.show_state("processing", "Переписываю", from_width=width)
+            self.hud.show_state("processing", t("Переписываю"), from_width=width)
         snapshot = _Snapshot(self.cfg.as_dict())
 
         def work() -> None:
             try:
                 text = polish.edit(source, instruction, snapshot)
             except Exception as exc:                  # сеть, ключ, отказ модели
-                self.failed.emit(f"Не переписал: {exc}")
+                self.failed.emit(t("Не переписал: {error}", error=exc))
                 return
             self.editReady.emit(text)
 
@@ -598,7 +645,8 @@ class Controller(QObject):
         self._stopped_at = time.monotonic()
         self.recorder.on_block = None
         live_job, self._live = self._live, None
-        self.hotkeys.notify_stopped()
+        self._job_reply, self._reply = self._reply, None
+        self._notify_keys_stopped()
         self.tray.setIcon(make_icon(BUSY_COLOR))
         if self.cfg.get("play_sounds"):
             _beep(660, 55)
@@ -607,7 +655,7 @@ class Controller(QObject):
         if error:
             if live_job is not None:
                 live_job.cancel()
-            self._show_error(f"Микрофон недоступен: {error}")
+            self._show_error(t("Микрофон недоступен: {error}", error=error))
             return
 
         seconds = _wav_seconds(wav)
@@ -632,7 +680,8 @@ class Controller(QObject):
             return
         self.recorder.cancel()
         self._drop_live()
-        self.hotkeys.notify_stopped()
+        self._reply = None
+        self._notify_keys_stopped()
         self.tray.setIcon(make_icon(IDLE_COLOR))
         self.hud.hide_now()
 
@@ -659,7 +708,7 @@ class Controller(QObject):
             self.failed.emit(str(exc))
             return
         except Exception as exc:                      # не роняем трей из-за сети
-            self.failed.emit(f"Непредвиденная ошибка: {exc}")
+            self.failed.emit(t("Непредвиденная ошибка: {error}", error=exc))
             return
         self.resultReady.emit(text, seconds)
 
@@ -670,10 +719,14 @@ class Controller(QObject):
 
         if not text.strip():
             if self.cfg.get("hud"):
-                self.hud.show_state("done", "Ничего не распознано", hide_after=1.6)
+                self.hud.show_state("done", t("Ничего не распознано"), hide_after=1.6)
             return
 
-        self.history.add(text, self.cfg.get("mode"), seconds)
+        reply = self._job_reply
+        self.history.add(text, "claude" if reply else self.cfg.get("mode"), seconds)
+        if reply is not None:
+            self._send_reply(reply, text, seconds)
+            return
 
         # вставка спит между нажатиями — уводим её с потока интерфейса,
         # иначе индикатор замирает на время доставки
@@ -695,6 +748,30 @@ class Controller(QObject):
             self.inserted.emit(ok)
 
         threading.Thread(target=deliver, daemon=True, name="shepot-insert").start()
+
+    def _send_reply(self, session, text: str, seconds: float) -> None:
+        def deliver() -> None:
+            try:
+                claude_reply.send(session.pid, text)
+            except Exception as exc:
+                inserter.set_clipboard_text(text)    # не потерять продиктованное
+                self.replyFailed.emit(t("Не отправил в {session}: {error}. Текст в буфере", session=session.name, error=exc))
+                return
+            self.claude_bridge.replied(session)
+            self.stats.record(stats.count_words(text), seconds,
+                              wait=time.monotonic() - self._stopped_at, app="claude code")
+            self.replySent.emit(session.name)
+
+        threading.Thread(target=deliver, daemon=True, name="shepot-claude-reply").start()
+
+    def _reply_sent(self, name: str) -> None:
+        self._job_reply = None
+        if self.cfg.get("hud"):
+            self.hud.show_state("done", t("Ответ ушёл: {session}", session=name), hide_after=1.6)
+
+    def _reply_failed(self, message: str) -> None:
+        self._job_reply = None
+        self._show_error(message)
 
     # ------------------------------------------------------- обучение словаря
     def _check_learning(self) -> None:
@@ -732,7 +809,7 @@ class Controller(QObject):
         added = added or [p[1] for p in pairs if old_pairs.get(p[0].lower()) != p[1]]
         quiet = not (self.recorder.is_recording or self._busy or self.edit_panel.isVisible())
         if self.cfg.get("hud") and quiet:
-            self.hud.show_state("done", "Запомнил: " + ", ".join(added), hide_after=2.2)
+            self.hud.show_state("done", t("Запомнил: {terms}", terms=", ".join(added)), hide_after=2.2)
 
     def _report_insertion(self, delivered: bool) -> None:
         if delivered and not self._job_is_edit:
@@ -741,13 +818,13 @@ class Controller(QObject):
         if self.cfg.get("hud"):
             if self._job_is_edit and delivered and self._target_is_terminal:
                 # в терминале выделен вывод, заменить его нельзя — текст встал в строку ввода
-                self.hud.show_state("done", "Вставлено в строку ввода", hide_after=1.8)
+                self.hud.show_state("done", t("Вставлено в строку ввода"), hide_after=1.8)
             elif self._job_is_edit and delivered:
-                self.hud.show_state("done", "Заменено", hide_after=1.8, hint="Ctrl+Z вернёт")
+                self.hud.show_state("done", t("Заменено"), hide_after=1.8, hint=t("Ctrl+Z вернёт"))
             elif self._job_is_edit:
-                self.hud.show_state("done", "Готово, вставьте Ctrl+V", hide_after=3.0)
+                self.hud.show_state("done", t("Готово, вставьте Ctrl+V"), hide_after=3.0)
             else:
-                message = "Вставлено" if delivered else "Скопировано в буфер"
+                message = t("Вставлено") if delivered else t("Скопировано в буфер")
                 self.hud.show_state("done", message, hide_after=1.2)
 
     def _show_error(self, message: str) -> None:
@@ -758,7 +835,7 @@ class Controller(QObject):
         if self.cfg.get("hud"):
             self.hud.show_state("error", message, hide_after=4.0)
         else:
-            self.tray.showMessage(APP_TITLE, message, QSystemTrayIcon.Warning, 4000)
+            self.tray.showMessage(t(APP_TITLE), message, QSystemTrayIcon.Warning, 4000)
 
     # ----------------------------------------------------------------- окна
     def open_settings(self, focus_keys: bool = False) -> None:
@@ -769,12 +846,16 @@ class Controller(QObject):
         self.cancel_dictation()
         self.hotkeys.stop()                    # чтобы поле записи клавиш не срабатывало
         self.jump_keys.stop()
+        self.reply_keys.stop()
         dialog = SettingsDialog(self.cfg, focus_keys=focus_keys)
         self._settings_dialog = dialog
         accepted = dialog.exec()
         self._settings_dialog = None
         self._apply_hotkeys()
         if accepted:
+            if set_language(self.cfg.get("ui_language")) != self._menu_language:
+                self._build_menu()                     # язык сменился — меню значка заново
+                self._apply_jump_key(False)
             self._sync_menu()
             self._warm_up()
 
@@ -826,6 +907,7 @@ class Controller(QObject):
         self.clipshot.set_enabled(False)
         self.hotkeys.stop()
         self.jump_keys.stop()
+        self.reply_keys.stop()
         self.ghost.stop()                      # помощник вернёт окна непрозрачными
         self.claude_bridge.stop()
         self.recorder.close()

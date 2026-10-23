@@ -19,6 +19,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget
 
 from .island_place import PLACE, Dragger, no_activate
+from .i18n import t
 
 BARS = 16
 CAPSULE_H = 40.0
@@ -46,6 +47,7 @@ LABELS = {
     "error": "Ошибка",
 }
 LISTENING_W = 250.0
+REPLY_COLOR = QColor(165, 139, 255)   # как «ждёт ответа» в острове Claude Code
 RECORDING = ("listening",)
 
 
@@ -186,6 +188,9 @@ class Hud(QWidget):
         if self._leaving_at:
             return DOT_W
         if self._state in RECORDING:
+            if self._message:                          # «→ сессия»: ответ Claude Code голосом
+                text = QFontMetricsF(self._font).horizontalAdvance(self._message)
+                return min(MAX_W, LISTENING_W + text + 16.0)
             return LISTENING_W
         width = QFontMetricsF(self._font).horizontalAdvance(self._label()) + 62.0
         if self._hint:
@@ -193,7 +198,7 @@ class Hud(QWidget):
         return min(MAX_W, max(150.0, width))
 
     def _label(self) -> str:
-        return self._message or LABELS.get(self._state, "")
+        return self._message or t(LABELS.get(self._state, ""))
 
     def _tick(self) -> None:
         now = time.monotonic()
@@ -313,6 +318,14 @@ class Hud(QWidget):
         painter.setPen(accent)
         painter.drawText(QRectF(rect.left() + 34, rect.top(), 60, rect.height()),
                          Qt.AlignVCenter | Qt.AlignLeft, f"{seconds // 60}:{seconds % 60:02d}")
+
+        if self._message:
+            room = rect.width() - (LISTENING_W - 10)
+            painter.setFont(self._font)
+            painter.setPen(REPLY_COLOR)
+            text = QFontMetricsF(self._font).elidedText(self._message, Qt.ElideRight, room)
+            painter.drawText(QRectF(rect.left() + 82, rect.top(), room, rect.height()),
+                             Qt.AlignVCenter | Qt.AlignLeft, text)
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(255, 255, 255))

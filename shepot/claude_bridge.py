@@ -22,11 +22,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from PySide6.QtCore import QObject, Signal
 
+from . import claude_reply
 from .config import CONFIG_DIR
+from .i18n import t
 
 PORT = 47821
 TOKEN_FILE = CONFIG_DIR / "claude_token"
 DECISION_WAIT_S = 60.0         # дольше не держим: иначе терминал ждёт хук вместо обычного вопроса
+REPLY_FRESH_S = 30 * 60        # отвечать голосом можно сессии, которая отзывалась не позже этого
 
 
 def token() -> str:
@@ -50,6 +53,7 @@ class Session:
     action: str = ""
     started: float = field(default_factory=time.monotonic)
     updated: float = field(default_factory=time.monotonic)
+    pid: int = 0                   # процесс claude: в его консоль уходит голосовой ответ
 
 
 @dataclass
@@ -126,7 +130,7 @@ class Bridge(QObject):
                     payload = {}
                 event = self.path.rsplit("/", 1)[-1]
                 try:
-                    reply = bridge.handle(event, payload)
+                    reply = bridge.handle(event, payload, self.client_address[1])
                 except Exception:
                     reply = {}                       # сломаться должен остров, а не Claude Code
                 body = json.dumps(reply).encode("utf-8")
@@ -139,7 +143,7 @@ class Bridge(QObject):
         try:
             self._server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
         except OSError as exc:
-            self.error = f"Порт {port} занят: {exc}"
+            self.error = t("Порт {port} занят: {error}", port=port, error=exc)
             return False
         self._server.daemon_threads = True
         threading.Thread(target=self._server.serve_forever, daemon=True,
@@ -152,7 +156,7 @@ class Bridge(QObject):
             self._server = None
 
     # -------------------------------------------------------------- события
-    def handle(self, event: str, p: dict) -> dict:
+    def handle(self, event: str, p: dict, client_port: int = 0) -> dict:
         sid = p.get("session_id") or "?"
         if p.get("agent_id"):
             return {}                                # субагенты не меняют состояние сессии
@@ -169,11 +173,18 @@ class Bridge(QObject):
             elif p.get("session_title"):
                 s.name = p["session_title"]
             s.updated = time.monotonic()
+            need_pid = not s.pid
+        if need_pid and client_port:
+            # хук шлёт сам процесс claude: по порту соединения узнаём, кто это
+            try:
+                s.pid = claude_reply.owner_pid(client_port, PORT)
+            except Exception:
+                pass
 
         if event == "SessionStart":
             pass
         elif event == "UserPromptSubmit":
-            self._set(s, "think", "думает", restart=True)
+            self._set(s, "think", t("думает"), restart=True)
             self._close_pending(sid)
         elif event == "PreToolUse":
             self._set(s, "think", _action(p.get("tool_name", ""), p.get("tool_input")))
@@ -184,11 +195,11 @@ class Bridge(QObject):
         elif event == "Notification":
             kind = p.get("notification_type")
             if kind == "idle_prompt":
-                self._set(s, "ask", "ждёт ответа")
+                self._set(s, "ask", t("ждёт ответа"))
             elif kind == "permission_prompt" and s.state != "wait":
-                self._set(s, "wait", "ждёт разрешения в терминале")
+                self._set(s, "wait", t("ждёт разрешения в терминале"))
         elif event == "Stop":
-            self._set(s, "done", "готово")
+            self._set(s, "done", t("готово"))
             self._close_pending(sid)
             line = " ".join((p.get("last_assistant_message") or "").split())
             self.finished.emit(s.name, line)
@@ -208,7 +219,7 @@ class Bridge(QObject):
                              p.get("permission_suggestions") or [])
         with self._lock:
             self.pending.append(request)
-        self._set(s, "wait", "ждёт разрешения")
+        self._set(s, "wait", t("ждёт разрешения"))
         self.changed.emit()
         self.permissionAsked.emit(request)
         request.done.wait(DECISION_WAIT_S)
@@ -230,7 +241,7 @@ class Bridge(QObject):
             if always and request.suggestions:
                 decision["updatedPermissions"] = request.suggestions
         else:
-            decision = {"behavior": "deny", "message": "Пользователь отказал в острове Шёпота."}
+            decision = {"behavior": "deny", "message": "The user denied this in the Shepot island."}
         request.decision = decision
         request.done.set()
 
@@ -239,6 +250,27 @@ class Bridge(QObject):
             stale = [r for r in self.pending if r.session_id == sid]
         for request in stale:
             request.done.set()                       # решение без нас: терминал уже ответил
+
+    def reply_target(self) -> Session | None:
+        """Кому уйдёт голосовой ответ: сессия, которая ждёт ответа или только что закончила.
+
+        Ждущая ответа важнее закончившей; среди равных — та, что отозвалась последней.
+        Думающей сессии тоже можно ответить: Claude Code поставит сообщение в очередь.
+        """
+        now = time.monotonic()
+        rank = {"ask": 0, "done": 1, "wait": 2, "think": 3}
+        with self._lock:
+            alive = [s for s in self.sessions.values()
+                     if s.pid and s.state in rank and now - s.updated <= REPLY_FRESH_S]
+        if not alive:
+            return None
+        return min(alive, key=lambda s: (rank[s.state], -s.updated))
+
+    def replied(self, s: Session) -> None:
+        """Ответ ушёл в терминал: сессия снова думает (UserPromptSubmit подтвердит)."""
+        self._set(s, "think", t("думает"), restart=True)
+        s.updated = time.monotonic()
+        self.changed.emit()
 
     def snapshot(self) -> list[Session]:
         with self._lock:
@@ -254,5 +286,5 @@ def _action(tool: str, data) -> str:
     names = {"Read": "читает", "Edit": "правит", "Write": "пишет", "Bash": "запускает",
              "Grep": "ищет", "Glob": "ищет файлы", "WebFetch": "читает страницу",
              "WebSearch": "ищет в сети", "Task": "запустил агента", "Agent": "запустил агента"}
-    verb = names.get(tool, tool)
+    verb = t(names[tool]) if tool in names else tool
     return f"{verb} {detail}".strip() if detail else verb

@@ -19,6 +19,7 @@ from PySide6.QtGui import QColor, QCursor, QFont, QFontMetricsF, QGuiApplication
 from PySide6.QtWidgets import QLineEdit, QWidget
 
 from . import jump
+from .i18n import plural, t
 
 PAD = 16                      # поле под тень
 LIST_W, CARD_W = 470, 320
@@ -54,10 +55,8 @@ def _font(size: float, weight=QFont.Normal, family: str = "Segoe UI") -> QFont:
     return font
 
 
-def _plural(n: int, one: str, few: str, many: str) -> str:
-    m = n % 100
-    form = many if 11 <= m <= 14 else one if m % 10 == 1 else few if 2 <= m % 10 <= 4 else many
-    return f"{n} {form}"
+def _plural(n: int, one: str, few: str, many: str, en_one: str, en_many: str) -> str:
+    return f"{n} {plural(n, (one, few, many), (en_one, en_many))}"
 
 
 class JumpPanel(QWidget):
@@ -82,7 +81,7 @@ class JumpPanel(QWidget):
 
         self.field = QLineEdit(self)
         self.field.setFont(_font(13))
-        self.field.setPlaceholderText("Проект…")
+        self.field.setPlaceholderText(t("Проект…"))
         self.field.setGeometry(PAD + 46, PAD + 11, LIST_W - 150, SEARCH_H - 22)
         self.field.textChanged.connect(self._filter)
         self.field.installEventFilter(self)
@@ -167,9 +166,9 @@ class JumpPanel(QWidget):
             self._shown = pinned + rest
             self._rows = []
             if pinned:
-                self._rows.append(("group", "Закреплённые"))
+                self._rows.append(("group", t("Закреплённые")))
                 self._rows += [("row", i) for i in range(len(pinned))]
-            self._rows.append(("group", "Недавние" if pinned else "Проекты"))
+            self._rows.append(("group", t("Недавние") if pinned else t("Проекты")))
             self._rows += [("row", len(pinned) + i) for i in range(len(rest))]
         self._sel, self._scroll = 0, 0
         self.update()
@@ -344,7 +343,7 @@ class JumpPanel(QWidget):
         if not self._shown:
             p.setFont(self.f_body)
             p.setPen(DIM)
-            p.drawText(area.adjusted(0, 20, 0, 0), Qt.AlignTop | Qt.AlignHCenter, "Нет такого проекта")
+            p.drawText(area.adjusted(0, 20, 0, 0), Qt.AlignTop | Qt.AlignHCenter, t("Нет такого проекта"))
         query = self.field.text()
         y = area.top() + 6 - self._scroll
         for kind, value in self._rows:
@@ -381,7 +380,7 @@ class JumpPanel(QWidget):
         status = self._status.get(project.key) or jump.Status()
         pills = []
         if status.is_open:
-            pills.append(("открыт", GREEN))
+            pills.append((t("открыт"), GREEN))
         if status.running and project.url:
             port = project.url.rsplit(":", 1)[-1].strip("/")
             pills.append((":" + port, BLUE))
@@ -449,26 +448,28 @@ class JumpPanel(QWidget):
 
         lines: list[tuple[str, str, QColor]] = []
         if project.branch:
-            lines.append(("Ветка", project.branch, WHITE))
-            lines.append(("Изменения", _plural(status.dirty, "файл не закоммичен", "файла не закоммичены",
-                                                "файлов не закоммичено") if status.dirty else "чисто",
+            lines.append((t("Ветка"), project.branch, WHITE))
+            lines.append((t("Изменения"), _plural(status.dirty, "файл не закоммичен", "файла не закоммичены",
+                                                "файлов не закоммичено", "uncommitted file",
+                                                "uncommitted files") if status.dirty else t("чисто"),
                           ORANGE if status.dirty else WHITE))
             if not status.upstream:
-                lines.append(("GitHub", "ветка не отправлена", ORANGE))
+                lines.append(("GitHub", t("ветка не отправлена"), ORANGE))
             elif status.ahead:
                 lines.append(("GitHub", _plural(status.ahead, "коммит не отправлен", "коммита не отправлены",
-                                                 "коммитов не отправлено"), ORANGE))
+                                                 "коммитов не отправлено", "unpushed commit",
+                                                 "unpushed commits"), ORANGE))
             else:
-                lines.append(("GitHub", "всё отправлено", WHITE))
+                lines.append(("GitHub", t("всё отправлено"), WHITE))
             if status.last:
-                lines.append(("Последний", f"{status.last} · {jump.ago(status.last_ts)}", WHITE))
+                lines.append((t("Последний"), f"{status.last} · {jump.ago(status.last_ts)}", WHITE))
         else:
-            lines.append(("Git", "не репозиторий", DIM))
+            lines.append(("Git", t("не репозиторий"), DIM))
         if status.is_open:
-            what = ", ".join(n for n, h in (("VS Code", status.editor), ("терминал", status.terminal)) if h)
-            lines.append(("Сейчас", f"уже открыт: {what}", GREEN))
+            what = ", ".join(n for n, h in (("VS Code", status.editor), (t("терминал"), status.terminal)) if h)
+            lines.append((t("Сейчас"), t("уже открыт: {what}", what=what), GREEN))
         if status.running:
-            lines.append(("Сервер", "работает " + project.url.replace("http://", ""), BLUE))
+            lines.append((t("Сервер"), t("работает {url}", url=project.url.replace("http://", "")), BLUE))
         for label, value, color in lines:
             p.setFont(self.f_small)
             p.setPen(DIM)
@@ -481,7 +482,7 @@ class JumpPanel(QWidget):
 
         p.setFont(self.f_label)
         p.setPen(DIM)
-        p.drawText(QRectF(x, y, w, 16), Qt.AlignVCenter | Qt.AlignLeft, "ЧТО ОТКРОЕТСЯ")
+        p.drawText(QRectF(x, y, w, 16), Qt.AlignVCenter | Qt.AlignLeft, t("ЧТО ОТКРОЕТСЯ"))
         y += 22
         self._paint_layout(p, QRectF(x, y, w, 76), project, opts, status)
         y += 88
@@ -493,7 +494,7 @@ class JumpPanel(QWidget):
         for index, part in enumerate(jump.PARTS):
             if part not in project.available:
                 continue
-            label = jump.PART_LABELS[part]
+            label = t(jump.PART_LABELS[part])
             key = str(index + 1)
             chip_w = m.horizontalAdvance(label) + m.horizontalAdvance(key) + 38
             if cx + chip_w > x + w:
@@ -520,7 +521,7 @@ class JumpPanel(QWidget):
         p.drawRoundedRect(go, 10, 10)
         p.setFont(self.f_bold)
         p.setPen(QColor(26, 16, 0))
-        label = "Переключиться и расставить" if status.is_open else "Открыть"
+        label = t("Переключиться и расставить") if status.is_open else t("Открыть")
         p.drawText(go.adjusted(14, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft, label)
         p.setFont(self.f_mono)
         p.drawText(go.adjusted(0, 0, -14, 0), Qt.AlignVCenter | Qt.AlignRight, "Enter")
@@ -532,7 +533,7 @@ class JumpPanel(QWidget):
         p.setPen(QPen(LINE, 1))
         p.setBrush(INK_2)
         p.drawRoundedRect(box, 8, 8)
-        tabs = [jump.PART_LABELS[k] for k in ("claude", "codex", "dev") if opts.get(k)]
+        tabs = [t(jump.PART_LABELS[k]) for k in ("claude", "codex", "dev") if opts.get(k)]
         inner = box.adjusted(5, 5, -5, -5)
         blocks = []
         if opts.get("code") and tabs:
@@ -554,18 +555,18 @@ class JumpPanel(QWidget):
                        QFontMetricsF(self.f_mono).elidedText(label, Qt.ElideRight, rect.width() - 8))
         if not blocks:
             p.setPen(DIM)
-            p.drawText(box, Qt.AlignCenter, "ничего не отмечено")
+            p.drawText(box, Qt.AlignCenter, t("ничего не отмечено"))
         if opts.get("web") and project.url:
             badge = QRectF(box.right() - 74, box.bottom() - 22, 68, 17)
             p.setPen(Qt.NoPen)
             p.setBrush(PART_COLORS["web"])
             p.drawRoundedRect(badge, 5, 5)
             p.setPen(WHITE)
-            p.drawText(badge, Qt.AlignCenter, "+ браузер")
+            p.drawText(badge, Qt.AlignCenter, "+ " + t("браузер"))
 
     def _paint_foot(self, p: QPainter, area: QRectF) -> None:
         p.setFont(self.f_small)
         p.setPen(DIM)
         p.drawText(area, Qt.AlignVCenter | Qt.AlignLeft,
-                   "Enter — открыть    Shift+Enter — только терминал    Alt+1…5 — что открыть    "
-                   "Ctrl+P — закрепить    Ctrl+E — папка    Esc")
+                   t("Enter — открыть    Shift+Enter — только терминал    Alt+1…5 — что открыть    "
+                     "Ctrl+P — закрепить    Ctrl+E — папка    Esc"))

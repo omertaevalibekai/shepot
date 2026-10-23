@@ -26,8 +26,9 @@ dictation works in ~99 languages.
 | **Engines** | OpenAI cloud or local faster-whisper with no internet |
 | **Insertion** | Via the clipboard, by simulated typing, or copy only |
 | **History** | Recent dictations, in case the text didn't make it to the window |
+| **Interface** | English or Russian, follows Windows by default; switch it in Settings → General |
 | **Live transcription** | Long dictation is cut at pauses and transcribed while you speak, so the text lands almost as soon as you stop |
-| **Window context** | Names and terms from the window you dictate into are spelled right the first time |
+| **Window context** | Optional, off by default: names and terms from the window you dictate into are spelled right the first time |
 | **Stats** | Words dictated, time saved, streak, a 30-day chart; copy it as a picture to share |
 | **Island** | A black capsule at the bottom of the screen; drag it anywhere, it snaps to magnets |
 | **Claude Code** | The island shows what your Claude Code sessions are doing and lets you approve commands |
@@ -37,7 +38,7 @@ dictation works in ~99 languages.
 
 <table>
 <tr>
-<td width="55%"><img src="docs/img/settings.png" alt="Settings window: API keys, hotkeys, text processing"></td>
+<td width="55%"><img src="docs/img/settings.png" alt="Settings window: sections on the left, grouped options on the right"></td>
 <td><img src="docs/img/history.png" alt="Dictation history"></td>
 </tr>
 <tr>
@@ -253,6 +254,16 @@ current action.
 When Claude Code asks for permission, a card with the command and **Allow /
 Deny / Always** buttons ("Разрешить / Отказать / Всегда так") appears (`Enter` and `Esc` once the card is clicked).
 If there's no answer within 60 s, Claude Code asks in the terminal as usual.
+
+**Reply by voice.** Press `Ctrl+Alt+Space`, speak, press it again: the text goes
+to the terminal of the session that is waiting for an answer or has just
+finished, and is sent as if you had typed it and pressed Enter. No need to
+switch windows; the terminal can be minimized or in another tab. While
+recording, the island shows which session you're replying to. Shepot writes the
+text straight into that session's console input (`WriteConsoleInput`), so no
+keystrokes reach other windows and the clipboard isn't touched. If sending
+fails, the text is left on the clipboard. The key can be changed in Settings →
+"Claude Code".
 
 To connect, open Settings → "Claude Code" → "Подключить к Claude Code"
 (connect). This adds Shepot's hooks to `~/.claude/settings.json`, keeping a

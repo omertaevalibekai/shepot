@@ -31,7 +31,7 @@ DEFAULTS: dict = {
     "latin_terms": True,           # английские слова в русской речи — латиницей
     "learn_corrections": True,     # исправил термин после вставки → он попадает в словарь
     "live_transcribe": True,       # длинная диктовка распознаётся кусками, пока человек говорит
-    "window_context": True,        # имена и текст из окна — подсказка распознаванию и чистке
+    "window_context": False,       # имена и текст из окна — подсказка распознаванию и чистке; текст уходит в API, поэтому только по желанию
     "replacements": {},            # выученное «как распознал → как надо» (learn.py)
     "custom_instruction": "",      # своя добавка к промпту
     # --- распознавание речи ---
@@ -55,6 +55,8 @@ DEFAULTS: dict = {
     "voice_edit": True,            # есть выделение → речь считается командой правки
     # --- Claude Code ---
     "claude_island": True,         # показывать сессии Claude Code в острове (нужны хуки)
+    "claude_reply": True,          # своя клавиша — голосовой ответ сессии Claude Code
+    "claude_reply_hotkey": "ctrl+alt+space",
     # --- окна и проекты ---
     "ghost": True,                 # Alt + колесо над окном — прозрачность
     "jump": True,                  # горячая клавиша — поиск проекта и его рабочее место
@@ -73,6 +75,7 @@ DEFAULTS: dict = {
     "play_sounds": True,
     "history_limit": 200,
     "autostart": False,
+    "ui_language": "auto",         # язык интерфейса: auto (как в Windows) | ru | en
     "check_updates": True,         # раз в сутки спрашивать GitHub о новой версии
     "update_notified": "",         # о какой версии уже сказали всплывашкой
 }

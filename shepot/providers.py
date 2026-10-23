@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 
 from . import secrets
+from .i18n import t
 
 
 class ProviderError(RuntimeError):
@@ -35,7 +36,7 @@ def openai_client():
     global _openai, _openai_key
     key = secrets.get(secrets.OPENAI)
     if not key:
-        raise ProviderError(NO_OPENAI_KEY)
+        raise ProviderError(t(NO_OPENAI_KEY))
     with _lock:
         if _openai is None or key != _openai_key:
             from openai import OpenAI
@@ -49,14 +50,14 @@ def anthropic_client():
     global _anthropic, _anthropic_key
     key = secrets.get(secrets.ANTHROPIC)
     if not key:
-        raise ProviderError(NO_ANTHROPIC_KEY)
+        raise ProviderError(t(NO_ANTHROPIC_KEY))
     with _lock:
         if _anthropic is None or key != _anthropic_key:
             try:
                 import anthropic
             except ImportError as exc:
                 raise ProviderError(
-                    "Не установлен пакет anthropic. Выполните: pip install anthropic"
+                    t("Не установлен пакет anthropic. Выполните: pip install anthropic")
                 ) from exc
             _anthropic = anthropic.Anthropic(api_key=key, max_retries=1)
             _anthropic_key = key
@@ -74,12 +75,12 @@ def reset() -> None:
 def _shape_problem(key: str) -> str | None:
     """Очевидные проблемы ключа, которые видно без запроса к серверу."""
     if not key:
-        return "Ключ не заполнен."
+        return t("Ключ не заполнен.")
     if not key.isascii():
-        return ("В ключе есть посторонние символы (кириллица или невидимые знаки) — "
-                "скопируйте его заново целиком.")
+        return t("В ключе есть посторонние символы (кириллица или невидимые знаки) — "
+                 "скопируйте его заново целиком.")
     if any(c.isspace() for c in key):
-        return "В ключе есть пробел или перенос строки — скопируйте его заново."
+        return t("В ключе есть пробел или перенос строки — скопируйте его заново.")
     return None
 
 
@@ -97,9 +98,8 @@ def check_openai(key: str) -> tuple[bool, str]:
         return False, _humanize(exc)
     missing = [m for m in ("gpt-4o-transcribe", "gpt-4o-mini") if m not in models]
     if missing:
-        return True, ("Ключ рабочий, но этому проекту недоступны модели: "
-                      + ", ".join(missing))
-    return True, "Ключ рабочий, нужные модели доступны."
+        return True, t("Ключ рабочий, но этому проекту недоступны модели: {models}", models=", ".join(missing))
+    return True, t("Ключ рабочий, нужные модели доступны.")
 
 
 def check_anthropic(key: str) -> tuple[bool, str]:
@@ -110,23 +110,23 @@ def check_anthropic(key: str) -> tuple[bool, str]:
     try:
         import anthropic
     except ImportError:
-        return False, "Не установлен пакет anthropic (pip install anthropic)."
+        return False, t("Не установлен пакет anthropic (pip install anthropic).")
     try:
         anthropic.Anthropic(api_key=key, max_retries=0).models.list()
     except Exception as exc:
         return False, _humanize(exc)
-    return True, "Ключ рабочий."
+    return True, t("Ключ рабочий.")
 
 
 def _humanize(exc: Exception) -> str:
     text = str(exc)
     lowered = text.lower()
     if "401" in text or "invalid_api_key" in lowered or "authentication" in lowered:
-        return "Ключ не принят — проверьте, что скопировали его целиком."
+        return t("Ключ не принят — проверьте, что скопировали его целиком.")
     if "429" in text or "quota" in lowered:
-        return "Ключ верный, но лимит или баланс исчерпаны."
+        return t("Ключ верный, но лимит или баланс исчерпаны.")
     if "connect" in lowered or "timeout" in lowered or "network" in lowered:
-        return "Нет связи с сервером — проверьте интернет."
+        return t("Нет связи с сервером — проверьте интернет.")
     return text[:200]
 
 

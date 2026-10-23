@@ -12,14 +12,17 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from . import resources
 from .app import APP_TITLE, Controller
+from .config import Config
+from .i18n import set_language, t
 
 MUTEX_NAME = "Global\\ShepotSingleInstance"
 
 
 def main() -> int:
+    set_language(Config().get("ui_language"))
     mutex = win32event.CreateMutex(None, False, MUTEX_NAME)
     if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
-        print("Шёпот уже запущен — смотрите значок в трее.")
+        print(t("Шёпот уже запущен — смотрите значок в трее."))
         return 0
 
     app = QApplication(sys.argv)
@@ -30,7 +33,7 @@ def main() -> int:
         app.setWindowIcon(QIcon(str(icon)))
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
-        QMessageBox.critical(None, APP_TITLE, "Системный трей недоступен.")
+        QMessageBox.critical(None, t(APP_TITLE), t("Системный трей недоступен."))
         return 1
 
     controller = Controller(app)

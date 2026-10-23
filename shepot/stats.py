@@ -16,6 +16,7 @@ import threading
 from datetime import date, datetime, timedelta
 
 from .config import CONFIG_DIR
+from .i18n import t
 
 STATS_PATH = CONFIG_DIR / "stats.json"
 TYPING_WPM = 40
@@ -146,6 +147,6 @@ def saved_seconds(words: int, spent: float) -> float:
 def format_duration(seconds: float) -> str:
     minutes = int(round(seconds / 60))
     if minutes < 60:
-        return f"{minutes} мин"
+        return t("{m} мин", m=minutes)
     hours, minutes = divmod(minutes, 60)
-    return f"{hours} ч {minutes:02d} мин" if minutes else f"{hours} ч"
+    return t("{h} ч {m:02d} мин", h=hours, m=minutes) if minutes else t("{h} ч", h=hours)

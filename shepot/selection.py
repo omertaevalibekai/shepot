@@ -20,6 +20,7 @@ import time
 from ctypes import wintypes
 
 from . import inserter
+from .i18n import plural
 
 _u32 = ctypes.windll.user32
 _k32 = ctypes.windll.kernel32
@@ -296,12 +297,6 @@ def document_text(limit: int = 200_000) -> str | None:
 
 
 def count_words(text: str) -> str:
-    """«1 слово», «3 слова», «21 слово», «12 слов»."""
+    """«1 слово», «3 слова», «21 слово», «12 слов» (или «1 word», «5 words»)."""
     n = len(text.split())
-    if n % 10 == 1 and n % 100 != 11:
-        word = "слово"
-    elif 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        word = "слова"
-    else:
-        word = "слов"
-    return f"{n} {word}"
+    return f"{n} {plural(n, ('слово', 'слова', 'слов'), ('word', 'words'))}"

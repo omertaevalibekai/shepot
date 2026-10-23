@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .i18n import t
+
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_CONSOLE = 0x00000010
 
@@ -48,7 +50,7 @@ SKIP_DIRS = {"node_modules", "__pycache__", ".git", ".venv", "venv"}
 
 # что можно открыть; порядок — как в панели и в клавишах Alt+1…5
 PARTS = ("claude", "codex", "code", "dev", "web")
-PART_LABELS = {"claude": "Claude", "codex": "Codex", "code": "VS Code", "dev": "Сервер", "web": "Браузер"}
+PART_LABELS = {"claude": "Claude", "codex": "Codex", "code": "VS Code", "dev": "Сервер", "web": "Браузер"}   # t() при показе
 
 TERM_CLASSES = {"CASCADIA_HOSTING_WINDOW_CLASS", "ConsoleWindowClass"}
 EDITOR_RATIO = 0.58               # редактор слева занимает 58 % ширины
@@ -263,18 +265,18 @@ def ago(ts: float) -> str:
         return ""
     minutes = (time.time() - ts) / 60
     if minutes < 2:
-        return "сейчас"
+        return t("сейчас")
     if minutes < 60:
-        return f"{int(minutes)} мин назад"
+        return t("{n} мин назад", n=int(minutes))
     hours = minutes / 60
     if hours < 24:
-        return f"{int(hours)} ч назад"
+        return t("{n} ч назад", n=int(hours))
     days = int(hours / 24)
     if days == 1:
-        return "вчера"
+        return t("вчера")
     if days < 30:
-        return f"{days} дн. назад"
-    return f"{days // 30} мес. назад"
+        return t("{n} дн. назад", n=days)
+    return t("{n} мес. назад", n=days // 30)
 
 
 # ------------------------------------------------------------------ поиск

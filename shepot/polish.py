@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from .i18n import t
+
 from .providers import ProviderError, anthropic_client, openai_client
 
 LANGUAGE_NAMES = {
@@ -99,7 +101,7 @@ def _openai(cfg, system: str, text: str) -> str:
             ],
         )
     except Exception as exc:
-        raise PolishError(f"Ошибка обработки текста: {exc}") from exc
+        raise PolishError(t("Ошибка обработки текста: {error}", error=exc)) from exc
     return response.choices[0].message.content or ""
 
 
@@ -122,10 +124,10 @@ def _anthropic(cfg, system: str, text: str) -> str:
             fallbacks="default",
         )
     except Exception as exc:
-        raise PolishError(f"Ошибка обработки текста: {exc}") from exc
+        raise PolishError(t("Ошибка обработки текста: {error}", error=exc)) from exc
 
     if getattr(response, "stop_reason", None) == "refusal":
-        raise PolishError("Модель отклонила обработку этого фрагмента.")
+        raise PolishError(t("Модель отклонила обработку этого фрагмента."))
     return "".join(
         block.text for block in response.content if getattr(block, "type", "") == "text"
     )
@@ -157,7 +159,7 @@ def edit(selection: str, request: str, cfg) -> str:
     """Переписывает выделенный текст по просьбе (стиль из панели или свой текст)."""
     request = (request or "").strip()
     if not request:
-        raise PolishError("Пустая просьба")
+        raise PolishError(t("Пустая просьба"))
     system = EDIT_RULES
     vocabulary = [t.strip() for t in (cfg.get("vocabulary") or []) if t.strip()]
     if vocabulary:

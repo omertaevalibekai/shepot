@@ -20,6 +20,8 @@ import time
 import win32clipboard
 import win32con
 
+from .i18n import t
+
 _u32 = ctypes.windll.user32
 _u32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 _u32.GetAsyncKeyState.restype = ctypes.c_short
@@ -60,7 +62,7 @@ def _clipboard_retry(action, attempts: int = 12, delay: float = 0.03):
                 pass
     if last is not None:
         raise last
-    raise RuntimeError("Не удалось получить доступ к буферу обмена")
+    raise RuntimeError(t("Не удалось получить доступ к буферу обмена"))
 
 
 def get_clipboard_text() -> str | None:

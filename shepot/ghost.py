@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QWidget
 
 from . import ghost_hook
 from .island_place import PLACE
+from .i18n import plural, t
 
 CREATE_NO_WINDOW = 0x08000000
 SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE, SWP_NOMOVE = 0x0001, 0x0004, 0x0010, 0x0002
@@ -162,7 +163,7 @@ class GhostScale(_Overlay):
             p.drawRoundedRect(label, 6, 6)
             p.setFont(self._font)
             p.setPen(QColor(255, 255, 255))
-            p.drawText(label, Qt.AlignCenter, "насквозь")
+            p.drawText(label, Qt.AlignCenter, t("насквозь"))
 
 
 class GhostTab(_Overlay):
@@ -180,8 +181,8 @@ class GhostTab(_Overlay):
 
     def set_state(self, pct: int, thru: bool, peek: bool) -> None:
         self._thru = thru
-        self._text = "Подглядываю" if peek else (f"Насквозь {pct}%" if thru else f"Призрак {pct}%")
-        self._hint = "Alt+средняя вернёт 100%"
+        self._text = t("Подглядываю") if peek else (t("Насквозь {pct}%", pct=pct) if thru else t("Призрак {pct}%", pct=pct))
+        self._hint = t("Alt+средняя вернёт 100%")
         m = QFontMetricsF(self._font)
         self.resize(int(m.horizontalAdvance(self._text) + m.horizontalAdvance(self._hint) + 44), self.H)
         self.update()
@@ -243,12 +244,11 @@ class GhostChip(QWidget):
         self.setMouseTracking(True)
 
     def set_count(self, count: int) -> None:
-        forms = ("окно-призрак", "окна-призрака", "окон-призраков")
-        n = count % 100
-        form = forms[2] if 11 <= n <= 14 else forms[0] if n % 10 == 1 else forms[1] if 2 <= n % 10 <= 4 else forms[2]
+        form = plural(count, ("окно-призрак", "окна-призрака", "окон-призраков"),
+                      ("ghost window", "ghost windows"))
         self._text = f"{count} {form}"
         m = QFontMetricsF(self._font)
-        self.resize(int(m.horizontalAdvance(self._text) + m.horizontalAdvance("Вернуть все") + 98), self.H + 16)
+        self.resize(int(m.horizontalAdvance(self._text) + m.horizontalAdvance(t("Вернуть все")) + 98), self.H + 16)
         self.update()
 
     def place(self, lift: int) -> None:
@@ -260,7 +260,7 @@ class GhostChip(QWidget):
 
     def _button(self) -> QRectF:
         m = QFontMetricsF(self._font)
-        w = m.horizontalAdvance("Вернуть все") + 22
+        w = m.horizontalAdvance(t("Вернуть все")) + 22
         return QRectF(self.width() - 8 - 5 - w, 8 + 5, w, self.H - 10)
 
     def paintEvent(self, _event) -> None:
@@ -284,7 +284,7 @@ class GhostChip(QWidget):
         p.setBrush(QColor(255, 255, 255, 52 if self._hover else 30))
         p.drawRoundedRect(button, button.height() / 2, button.height() / 2)
         p.setPen(QColor(255, 255, 255))
-        p.drawText(button, Qt.AlignCenter, "Вернуть все")
+        p.drawText(button, Qt.AlignCenter, t("Вернуть все"))
 
     def mouseMoveEvent(self, event) -> None:
         hover = self._button().contains(event.position())
@@ -414,8 +414,8 @@ class Ghost(QObject):
         error = event.get("error")
         if error and event.get("rect"):
             tab = self._tab(event["hwnd"])
-            tab._text = ("Окно администратора — Windows его не даёт" if error == "denied"
-                         else "Это окно рисует прозрачность само")
+            tab._text = (t("Окно администратора — Windows его не даёт") if error == "denied"
+                         else t("Это окно рисует прозрачность само"))
             tab._hint = ""
             tab.resize(int(QFontMetricsF(tab._font).horizontalAdvance(tab._text) + 34), tab.H)
             left, top, right, _ = event["rect"]

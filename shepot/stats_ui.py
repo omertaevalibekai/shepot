@@ -13,6 +13,8 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication, QLinearGradient, QPain
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from . import stats as stats_mod
+from . import i18n
+from .i18n import t
 
 BG = QColor(247, 248, 251)
 CARD = QColor(255, 255, 255)
@@ -29,7 +31,7 @@ APP_NAMES = {
     "telegram": "Telegram", "chrome": "Chrome", "msedge": "Edge", "firefox": "Firefox",
     "winword": "Word", "outlook": "Outlook", "olk": "Outlook", "excel": "Excel",
     "slack": "Slack", "discord": "Discord", "code": "VS Code", "cursor": "Cursor",
-    "notepad": "Блокнот", "windowsterminal": "Терминал", "explorer": "Проводник",
+    "notepad": "Блокнот", "windowsterminal": "Терминал", "explorer": "Проводник",  # t() при показе
     "whatsapp": "WhatsApp", "notion": "Notion", "obsidian": "Obsidian", "claude": "Claude",
     "chatgpt": "ChatGPT", "zoom": "Zoom", "teams": "Teams", "ms-teams": "Teams",
 }
@@ -37,23 +39,19 @@ APP_NAMES = {
 
 def app_title(exe: str) -> str:
     stem = exe.lower().removesuffix(".exe")
-    return APP_NAMES.get(stem, stem[:1].upper() + stem[1:])
+    return t(APP_NAMES[stem]) if stem in APP_NAMES else stem[:1].upper() + stem[1:]
 
 
-def plural(n: int, forms: tuple[str, str, str]) -> str:
-    if n % 10 == 1 and n % 100 != 11:
-        return forms[0]
-    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return forms[1]
-    return forms[2]
+def plural(n: int, forms: tuple[tuple[str, str, str], tuple[str, str]]) -> str:
+    return i18n.plural(n, *forms)
 
 
 def grouped(n: int) -> str:
     return f"{n:,}".replace(",", " ")          # 12 480 — узкий неразрывный пробел
 
 
-WORDS = ("слово", "слова", "слов")
-DAYS = ("день", "дня", "дней")
+WORDS = (("слово", "слова", "слов"), ("word", "words"))
+DAYS = (("день", "дня", "дней"), ("day", "days"))
 
 
 class StatsCard(QWidget):
@@ -98,21 +96,22 @@ class StatsCard(QWidget):
         self._draw_waves(p, hero)
         white = QColor(255, 255, 255)
         self._text(p, QRectF(hero.left() + 28, hero.top() + 22, 400, 22),
-                   "Надиктовано с Шёпотом", 10.5, QColor(255, 255, 255, 200))
+                   t("Надиктовано с Шёпотом"), 10.5, QColor(255, 255, 255, 200))
         words = s["words"]
         self._text(p, QRectF(hero.left() + 26, hero.top() + 46, 520, 60),
                    f"{grouped(words)} {plural(words, WORDS)}", 34, white, QFont.DemiBold)
         week = s["words_week"]
         self._text(p, QRectF(hero.left() + 28, hero.top() + 108, 520, 22),
-                   f"за неделю {grouped(week)} · диктовок {s['dictations']} · правок {s['edits']}",
+                   t("за неделю {week} · диктовок {dictations} · правок {edits}", week=grouped(week),
+                     dictations=s['dictations'], edits=s['edits']),
                    10.5, QColor(255, 255, 255, 210))
 
         # три плитки
         tiles = [
-            ("Сэкономлено", "≈ " + stats_mod.format_duration(s["saved_seconds"]),
-             f"против набора {stats_mod.TYPING_WPM} слов/мин", GREEN),
-            ("Серия", f"{s['streak']} {plural(s['streak'], DAYS)}", "подряд с диктовкой", ORANGE),
-            ("Сегодня", f"{grouped(s['words_today'])} {plural(s['words_today'], WORDS)}",
+            (t("Сэкономлено"), "≈ " + stats_mod.format_duration(s["saved_seconds"]),
+             t("против набора {wpm} слов/мин", wpm=stats_mod.TYPING_WPM), GREEN),
+            (t("Серия"), f"{s['streak']} {plural(s['streak'], DAYS)}", t("подряд с диктовкой"), ORANGE),
+            (t("Сегодня"), f"{grouped(s['words_today'])} {plural(s['words_today'], WORDS)}",
              self._wait_text(s["avg_wait"]), BLUE_TOP),
         ]
         gap, top = 12, hero.bottom() + 14
@@ -131,14 +130,14 @@ class StatsCard(QWidget):
         # столбики за 30 дней
         chart = QRectF(20, top + 110, self.W - 40, 150)
         self._card(p, chart)
-        self._text(p, QRectF(chart.left() + 18, chart.top() + 10, 300, 22), "Слов в день, 30 дней",
+        self._text(p, QRectF(chart.left() + 18, chart.top() + 10, 300, 22), t("Слов в день, 30 дней"),
                    10, INK, QFont.DemiBold)
         self._draw_bars(p, QRectF(chart.left() + 18, chart.top() + 40, chart.width() - 36, 92))
 
         # приложения
         apps = QRectF(20, chart.bottom() + 12, self.W - 40, self.H - chart.bottom() - 32)
         self._card(p, apps)
-        self._text(p, QRectF(apps.left() + 18, apps.top() + 10, 300, 22), "Куда диктуете",
+        self._text(p, QRectF(apps.left() + 18, apps.top() + 10, 300, 22), t("Куда диктуете"),
                    10, INK, QFont.DemiBold)
         self._draw_apps(p, QRectF(apps.left() + 18, apps.top() + 38, apps.width() - 36,
                                   apps.height() - 48))
@@ -147,8 +146,9 @@ class StatsCard(QWidget):
     @staticmethod
     def _wait_text(avg_wait: float | None) -> str:
         if avg_wait is None:
-            return "ждать текст: пока не знаем"
-        return f"ждать текст: {avg_wait:.1f} с".replace(".", ",")
+            return t("ждать текст: пока не знаем")
+        seconds = f"{avg_wait:.1f}"
+        return t("ждать текст: {s} с", s=seconds if i18n.language() == "en" else seconds.replace(".", ","))
 
     @staticmethod
     def _card(p: QPainter, rect: QRectF) -> None:
@@ -193,16 +193,16 @@ class StatsCard(QWidget):
                 p.drawEllipse(QPointF(x + bar_w / 2, area.bottom() - 2), 1.6, 1.6)
         if peak:
             self._text(p, QRectF(area.right() - 160, area.top() - 30, 160, 20),
-                       f"максимум {grouped(peak)}", 8.5, MUTED, flags=Qt.AlignRight | Qt.AlignVCenter)
+                       t("максимум {n}", n=grouped(peak)), 8.5, MUTED, flags=Qt.AlignRight | Qt.AlignVCenter)
         first = series[0][0] if series else date.today()
         self._text(p, QRectF(area.left(), area.bottom() + 2, 120, 16), first.strftime("%d.%m"), 8, MUTED)
-        self._text(p, QRectF(area.right() - 120, area.bottom() + 2, 120, 16), "сегодня", 8, MUTED,
+        self._text(p, QRectF(area.right() - 120, area.bottom() + 2, 120, 16), t("сегодня"), 8, MUTED,
                    flags=Qt.AlignRight | Qt.AlignVCenter)
 
     def _draw_apps(self, p: QPainter, area: QRectF) -> None:
         apps = self.summary["apps"][:4]
         if not apps:
-            self._text(p, area, "Появится после первых диктовок", 9.5, MUTED,
+            self._text(p, area, t("Появится после первых диктовок"), 9.5, MUTED,
                        flags=Qt.AlignLeft | Qt.AlignTop)
             return
         peak = apps[0][1] or 1
@@ -224,7 +224,7 @@ class StatsCard(QWidget):
 class StatsDialog(QDialog):
     def __init__(self, stats, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Шёпот — статистика")
+        self.setWindowTitle(t("Шёпот — статистика"))
         self.setStyleSheet("QDialog { background: #F7F8FB; }")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 14)
@@ -235,9 +235,9 @@ class StatsDialog(QDialog):
         buttons.setContentsMargins(20, 0, 20, 0)
         self.note = QLabel("")
         self.note.setStyleSheet("color: #767C8C;")
-        copy_button = QPushButton("Скопировать картинкой")
+        copy_button = QPushButton(t("Скопировать картинкой"))
         copy_button.clicked.connect(self._copy_image)
-        close_button = QPushButton("Закрыть")
+        close_button = QPushButton(t("Закрыть"))
         close_button.clicked.connect(self.accept)
         buttons.addWidget(self.note)
         buttons.addStretch(1)
@@ -247,4 +247,4 @@ class StatsDialog(QDialog):
 
     def _copy_image(self) -> None:
         QGuiApplication.clipboard().setPixmap(self.card.grab())
-        self.note.setText("Картинка в буфере, вставьте Ctrl+V")
+        self.note.setText(t("Картинка в буфере, вставьте Ctrl+V"))
