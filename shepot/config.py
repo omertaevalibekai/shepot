@@ -76,6 +76,7 @@ DEFAULTS: dict = {
     "history_limit": 200,
     "autostart": False,
     "ui_language": "auto",         # язык интерфейса: auto (как в Windows) | ru | en
+    "ui_theme": "dark",            # оформление настроек: auto | dark | light
     "check_updates": True,         # раз в сутки спрашивать GitHub о новой версии
     "update_notified": "",         # о какой версии уже сказали всплывашкой
 }

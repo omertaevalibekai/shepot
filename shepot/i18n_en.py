@@ -400,6 +400,20 @@ EN: dict[str, str] = {
     "не удалять": "forever",
     "Не удалось изменить автозапуск: {error}": "Couldn't change autostart: {error}",
 
+    "Настройки": "Settings",
+    "Оформление": "Appearance",
+    "Тема": "Theme",
+    "Тёмная": "Dark",
+    "Светлая": "Light",
+    "Изменения сохраняются, когда вы закрываете окно.": "Changes are saved when you close the window.",
+    "Голос в текст в любом окне · версия {v}": "Voice to text in any window · version {v}",
+    "Ключ OpenAI подключён": "OpenAI key connected",
+    "Нужен ключ OpenAI": "OpenAI key needed",
+    "Держите {key}, пока говорите": "Hold {key} while you speak",
+    "Так выглядит запись. Начать — {key}": "This is what recording looks like. Start with {key}",
+    "Язык, оформление, ключи доступа к моделям и то, как Шёпот ведёт себя на компьютере.":
+        "Language, appearance, model access keys and how Shepot behaves on your computer.",
+
     # ---------------------------------------------------------------- stats
     "{m} мин": "{m} min",
     "{h} ч {m:02d} мин": "{h} h {m:02d} min",

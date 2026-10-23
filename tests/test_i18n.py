@@ -17,7 +17,7 @@ from shepot.i18n_en import EN
 ROOT = Path(__file__).resolve().parent.parent / "shepot"
 CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 # словари, чьи значения показываются через t() в момент показа
-SHOWN_DICTS = {"LABELS", "STATE_TEXT", "MODE_TITLES", "PART_LABELS", "APP_NAMES", "_RU", "names",
+SHOWN_DICTS = {"LABELS", "STATE_TEXT", "MODE_TITLES", "PART_LABELS", "APP_NAMES", "_RU", "names", "THEMES",
                "APP_TITLE", "NO_OPENAI_KEY", "NO_ANTHROPIC_KEY"}
 
 

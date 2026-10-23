@@ -101,3 +101,14 @@ def test_search_filters_sections(dialog):
     assert visible == ["windows"]
     dlg.search.setText("zzz")
     assert not dlg.nothing.isHidden()
+
+
+def test_theme_switch_saves_and_rebuilds(dialog):
+    dlg, _cfg, path = dialog
+    assert settings_ui.ios.theme().dark                   # по умолчанию тёмная
+    dlg._open("insert")
+    dlg._theme_changed("light")
+    assert saved(path)["ui_theme"] == "light"
+    assert not settings_ui.ios.theme().dark
+    assert dlg._section == "insert"
+    settings_ui.ios.set_theme("dark")
