@@ -107,11 +107,16 @@ def build_hint(cfg) -> str:
     return LATIN_TERMS_HINT + " Также: " + ", ".join(vocabulary[-80:]) + "."
 
 
-def transcribe(wav: bytes, cfg) -> str:
-    """Переводит WAV-байты в текст согласно настройкам."""
+def transcribe(wav: bytes, cfg, hint: str | None = None) -> str:
+    """Переводит WAV-байты в текст согласно настройкам.
+
+    hint — готовая подсказка (с контекстом окна и концом предыдущего куска);
+    без неё берётся общая из build_hint.
+    """
     language = cfg.get("source_language") or "auto"
     language = None if language == "auto" else language
-    hint = build_hint(cfg)
+    if hint is None:
+        hint = build_hint(cfg)
 
     if cfg.get("stt_backend") == "local":
         return _transcribe_local(

@@ -170,14 +170,17 @@ def edit(selection: str, request: str, cfg) -> str:
     return _clean(_call(cfg, system, message)) or selection
 
 
-def polish(text: str, cfg) -> str:
-    """Возвращает готовый к вставке текст."""
+def polish(text: str, cfg, context_note: str = "") -> str:
+    """Возвращает готовый к вставке текст. context_note — что уже написано в окне (context.py)."""
     text = (text or "").strip()
     if not text:
         return ""
     if cfg.get("mode") == "raw" or cfg.get("llm_provider") == "none":
         return text
-    return _clean(_call(cfg, build_system_prompt(cfg), text)) or text
+    system = build_system_prompt(cfg)
+    if context_note:
+        system += "\n\n" + context_note
+    return _clean(_call(cfg, system, text)) or text
 
 
 def _clean(result: str) -> str:
