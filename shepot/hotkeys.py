@@ -24,6 +24,7 @@ from __future__ import annotations
 import ctypes
 import queue
 import threading
+import time
 from ctypes import wintypes
 from dataclasses import dataclass
 
@@ -368,6 +369,7 @@ class HotkeyManager:
         self._ptt_vk = 0                # удержание через RegisterHotKey: ждём отпускания
         self._raw_down: set[str] = set()
         self._dirty: set[str] = set()   # к одиночному модификатору нажали ещё клавишу
+        self._ignore_until = 0.0        # Шёпот сам шлёт Ctrl+C — это не сочетание человека
         self._cancel_was_down = False
         self._thread = threading.Thread(target=self._loop, name="shepot-hotkeys", daemon=True)
         self._thread.start()
@@ -562,7 +564,7 @@ class HotkeyManager:
     def _raw_key(self, vk: int, down: bool) -> None:
         mine = [s for s, b in self._bindings.items() if b.kind == "key" and b.vk == vk]
         if not mine:
-            if down:
+            if down and time.monotonic() >= self._ignore_until:
                 # Нажали другую клавишу, пока зажат наш модификатор: это было
                 # сочетание вроде Ctrl+C, а не команда Шёпоту.
                 for slot in self._raw_down:
@@ -606,6 +608,11 @@ class HotkeyManager:
             self._cancel_was_down = down
 
     # -------------------------------------------------------------- состояние
+    def ignore_other_keys(self, seconds: float) -> None:
+        """Ближайшие нажатия чужих клавиш — наши собственные (Ctrl+C для правки):
+        не считать их сочетанием, которое отменяет удержание."""
+        self._ignore_until = time.monotonic() + seconds
+
     def notify_stopped(self) -> None:
         """Контроллер остановил запись сам (таймаут, ошибка) — сбрасываем флаг."""
         self._held = False

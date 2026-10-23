@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import audio, clipshot, hotkeys, providers, secrets, startup
+from . import audio, claude_hooks, clipshot, hotkeys, jump, providers, secrets, startup
 from .polish import LANGUAGE_NAMES
 
 MODE_LABELS = [
@@ -361,6 +361,8 @@ class SettingsDialog(QDialog):
         content.addWidget(self._engine_group())
         content.addWidget(self._behaviour_group())
         content.addWidget(self._clipshot_group())
+        content.addWidget(self._windows_group())
+        content.addWidget(self._claude_group())
         content.addStretch(1)
 
         scroll = QScrollArea()
@@ -543,6 +545,13 @@ class SettingsDialog(QDialog):
         _fill(self.source_language, SOURCE_LANGUAGES, self.cfg.get("source_language"))
         form.addRow("Язык речи", self.source_language)
 
+        self.latin_terms = QComboBox()
+        _fill(self.latin_terms, [(True, "Латиницей: deploy, Figma"),
+                                 (False, "Как слышатся: деплой, фигма")],
+              bool(self.cfg.get("latin_terms")))
+        self.latin_terms.setToolTip("Как писать английские слова и названия в русской речи.")
+        form.addRow("Английские слова", self.latin_terms)
+
         self.target_language = QComboBox()
         _fill(
             self.target_language,
@@ -555,6 +564,15 @@ class SettingsDialog(QDialog):
         self.vocabulary.setPlaceholderText("Одно имя, бренд или термин в строке")
         self.vocabulary.setFixedHeight(76)
         form.addRow("Словарь", self.vocabulary)
+
+        self.learn_corrections = QCheckBox("Запоминать мои исправления названий и терминов")
+        self.learn_corrections.setChecked(bool(self.cfg.get("learn_corrections")))
+        self.learn_corrections.setToolTip(
+            "Исправили «фигму» на «Figma» после вставки — слово попадёт в словарь,\n"
+            "и в следующий раз распознается правильно. Текст окна читается только\n"
+            "на этом компьютере и никуда не отправляется."
+        )
+        form.addRow("", self.learn_corrections)
 
         self.custom_instruction = QPlainTextEdit(self.cfg.get("custom_instruction") or "")
         self.custom_instruction.setPlaceholderText(
@@ -638,6 +656,16 @@ class SettingsDialog(QDialog):
         )
         form.addRow("Возврат буфера через", self.restore_delay)
 
+        self.voice_edit = QCheckBox("Правка выделенного текста по горячей клавише")
+        self.voice_edit.setChecked(bool(self.cfg.get("voice_edit")))
+        self.voice_edit.setToolTip(
+            "Выделите текст и нажмите горячую клавишу: вместо записи откроется панель —\n"
+            "выберите стиль или напишите, как изменить, и выделение заменится.\n"
+            "В Windows Terminal результат встаёт в строку ввода. В редакторах кода и других\n"
+            "терминалах не включается: там Ctrl+C прерывает процесс."
+        )
+        form.addRow("", self.voice_edit)
+
         self.hud = QCheckBox("Показывать индикатор поверх окон")
         self.hud.setChecked(bool(self.cfg.get("hud")))
         form.addRow("", self.hud)
@@ -650,6 +678,50 @@ class SettingsDialog(QDialog):
         self.autostart.setChecked(startup.is_enabled())
         form.addRow("", self.autostart)
         return box
+
+    def _claude_group(self) -> QGroupBox:
+        box = QGroupBox("Claude Code")
+        form = QFormLayout(box)
+        self.claude_island = QCheckBox("Показывать сессии Claude Code в острове")
+        self.claude_island.setChecked(bool(self.cfg.get("claude_island")))
+        form.addRow("", self.claude_island)
+
+        self.claude_status = QLabel()
+        self.claude_status.setWordWrap(True)
+        self.claude_connect = QPushButton()
+        self.claude_connect.clicked.connect(self._toggle_claude_hooks)
+        row = QHBoxLayout()
+        row.addWidget(self.claude_connect)
+        row.addWidget(self.claude_status, 1)
+        form.addRow("Хуки", row)
+        hint = QLabel(
+            "Подключение дописывает хуки Шёпота в ~/.claude/settings.json (рядом кладётся "
+            "резервная копия; чужие хуки не трогаются). Остров показывает, кто из сессий думает, "
+            "закончил или ждёт разрешения, а разрешение можно дать прямо в нём. Пока Шёпот "
+            "выключен, Claude Code работает как обычно, но пишет об ошибке хука — тогда отключите."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid);")
+        form.addRow("", hint)
+        self._sync_claude_hooks()
+        return box
+
+    def _sync_claude_hooks(self) -> None:
+        installed = claude_hooks.is_installed()
+        self.claude_connect.setText("Отключить от Claude Code" if installed else "Подключить к Claude Code")
+        self.claude_status.setText("Подключено. Новые сессии Claude Code видны сразу, "
+                                   "уже открытые — после перезапуска." if installed else "Не подключено.")
+
+    def _toggle_claude_hooks(self) -> None:
+        try:
+            if claude_hooks.is_installed():
+                claude_hooks.uninstall()
+            else:
+                claude_hooks.install()
+        except (OSError, ValueError) as exc:
+            self.claude_status.setText(f"Не получилось изменить настройки Claude Code: {exc}")
+            return
+        self._sync_claude_hooks()
 
     def _clipshot_group(self) -> QGroupBox:
         box = QGroupBox("Скриншоты в терминал")
@@ -682,6 +754,59 @@ class SettingsDialog(QDialog):
         form.addRow("", hint)
         return box
 
+    def _windows_group(self) -> QGroupBox:
+        box = QGroupBox("Окна и проекты")
+        form = QFormLayout(box)
+
+        self.ghost = QCheckBox("Окно-призрак: Alt + колесо над окном меняет прозрачность")
+        self.ghost.setChecked(bool(self.cfg.get("ghost")))
+        self.ghost.setToolTip(
+            "Шаг 10 %. Alt + средняя кнопка возвращает 100 %. На 30 % и ниже окно\n"
+            "пропускает клики насквозь. Alt + колесо перестаёт доходить до программ\n"
+            "(например, до быстрой прокрутки в VS Code или масштаба в Photoshop)."
+        )
+        form.addRow("", self.ghost)
+
+        self.jump = QCheckBox("Прыжок в проект: поиск по папкам и запуск рабочего места")
+        self.jump.setChecked(bool(self.cfg.get("jump")))
+        self.jump.toggled.connect(self._sync_enabled)
+        form.addRow("", self.jump)
+
+        self.jump_capture = KeyCapture(self.cfg.get("jump_hotkey") or "win+j")
+        form.addRow("Клавиша прыжка", self.jump_capture)
+
+        self.jump_root = QLineEdit(self.cfg.get("jump_root") or "")
+        self.jump_root.setPlaceholderText(str(jump.default_root()))
+        form.addRow("Папка проектов", self.jump_root)
+
+        hint = QLabel(
+            "Прыжок открывает VS Code и Windows Terminal с вкладками Claude Code, Codex и сервера "
+            "(npm run dev) и ставит окна рядом; уже открытые окна проекта не дублирует. Что "
+            "открывать, отмечается галочками в самой панели (Alt + 1…5) и запоминается для "
+            "проекта. Win + P занят Windows (второй экран), поэтому по умолчанию Win + J."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888;")
+        form.addRow("", hint)
+        return box
+
+    def _jump_problem(self) -> str:
+        if not self.jump.isChecked():
+            return ""
+        text = self.jump_capture.value()
+        try:
+            binding = hotkeys.parse_binding(text)
+        except ValueError as exc:
+            return f"не получилось разобрать сочетание: {exc}"
+        if binding.raw:
+            return "для прыжка нужно сочетание с обычной клавишей, например Win + J"
+        if binding.text == hotkeys.parse_binding(self.hotkey_capture.value()).text:
+            return "совпадает с клавишей диктовки"
+        kind, message = hotkeys.assess(text)
+        if kind == "bad":
+            return message
+        return hotkeys.try_register(text) or ""
+
     # ----------------------------------------------------------- активность
     def _sync_enabled(self) -> None:
         local = self.stt_backend.currentData() == "local"
@@ -705,6 +830,10 @@ class SettingsDialog(QDialog):
         self.clipshot_dir.setEnabled(catching)
         self.clipshot_keep_days.setEnabled(catching)
 
+        jumping = self.jump.isChecked()
+        self.jump_capture.setEnabled(jumping)
+        self.jump_root.setEnabled(jumping)
+
     # -------------------------------------------------------------- сохранение
     def _accept(self) -> None:
         kind, problem = self._hotkey_problem()
@@ -712,6 +841,10 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Шёпот", f"Горячая клавиша: {problem}")
             return
         hotkey_mode = self._hotkey_mode()
+        jump_problem = self._jump_problem()
+        if jump_problem:
+            QMessageBox.warning(self, "Шёпот", f"Клавиша прыжка: {jump_problem}")
+            return
 
         vocabulary = [
             line.strip()
@@ -728,8 +861,15 @@ class SettingsDialog(QDialog):
                 "mode": self.mode.currentData(),
                 "tone": self.tone.currentData(),
                 "source_language": self.source_language.currentData(),
+                "latin_terms": bool(self.latin_terms.currentData()),
+                "learn_corrections": self.learn_corrections.isChecked(),
                 "target_language": self.target_language.currentData(),
                 "vocabulary": vocabulary,
+                # удалили слово из словаря — забываем и выученные замены на него
+                "replacements": {
+                    old: new for old, new in (self.cfg.get("replacements") or {}).items()
+                    if new.lower() in {term.lower() for term in vocabulary}
+                },
                 "custom_instruction": self.custom_instruction.toPlainText().strip(),
                 "stt_backend": self.stt_backend.currentData(),
                 "stt_model": self.stt_model.text().strip() or "gpt-4o-transcribe",
@@ -744,8 +884,14 @@ class SettingsDialog(QDialog):
                 "restore_clipboard": self.restore_clipboard.isChecked(),
                 "restore_delay": self.restore_delay.value(),
                 "clipshot": self.clipshot.isChecked(),
+                "claude_island": self.claude_island.isChecked(),
+                "ghost": self.ghost.isChecked(),
+                "jump": self.jump.isChecked(),
+                "jump_hotkey": self.jump_capture.value() or "win+j",
+                "jump_root": self.jump_root.text().strip(),
                 "clipshot_dir": self.clipshot_dir.text().strip(),
                 "clipshot_keep_days": self.clipshot_keep_days.value(),
+                "voice_edit": self.voice_edit.isChecked(),
                 "hud": self.hud.isChecked(),
                 "play_sounds": self.play_sounds.isChecked(),
                 "autostart": self.autostart.isChecked(),

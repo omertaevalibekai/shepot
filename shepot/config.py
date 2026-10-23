@@ -28,6 +28,9 @@ DEFAULTS: dict = {
     "source_language": "auto",     # auto | ru | en | kk | ...
     "target_language": "en",       # куда переводить в режиме translate
     "vocabulary": [],              # имена, бренды, термины
+    "latin_terms": True,           # английские слова в русской речи — латиницей
+    "learn_corrections": True,     # исправил термин после вставки → он попадает в словарь
+    "replacements": {},            # выученное «как распознал → как надо» (learn.py)
     "custom_instruction": "",      # своя добавка к промпту
     # --- распознавание речи ---
     "stt_backend": "openai",       # openai | local
@@ -46,12 +49,25 @@ DEFAULTS: dict = {
     "insert_method": "paste",      # paste (Ctrl+V) | type (SendInput) | clipboard
     "restore_clipboard": True,
     "restore_delay": 0.6,          # через сколько вернуть прежний буфер
+    # --- голосовая правка ---
+    "voice_edit": True,            # есть выделение → речь считается командой правки
+    # --- Claude Code ---
+    "claude_island": True,         # показывать сессии Claude Code в острове (нужны хуки)
+    # --- окна и проекты ---
+    "ghost": True,                 # Alt + колесо над окном — прозрачность
+    "jump": True,                  # горячая клавиша — поиск проекта и его рабочее место
+    "jump_hotkey": "win+j",
+    "jump_root": "",               # пусто = Рабочий стол\AI Projects
+    "jump_recent": {},             # путь проекта → когда открывали прыжком
+    "jump_pinned": [],             # закреплённые проекты — всегда сверху
+    "jump_options": {},            # путь проекта → что открывать (галочки)
     # --- скриншоты в терминал ---
     "clipshot": False,             # картинка в буфере → PNG на диске + путь в буфере
     "clipshot_dir": "",            # пусто = %TEMP%\claude-shots
     "clipshot_keep_days": 7,       # через сколько дней убирать старые снимки
     # --- интерфейс ---
     "hud": True,
+    "island_place": {},            # куда перетащили остров: монитор → доли рабочей области
     "play_sounds": True,
     "history_limit": 200,
     "autostart": False,

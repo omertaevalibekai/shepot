@@ -3,21 +3,32 @@
 from __future__ import annotations
 
 import threading
+import time
 import winsound
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import audio, clipshot, hotkeys, inserter, polish, providers, stt
+from . import audio, clipshot, ghost, hotkeys, inserter, island_place, jump, learn, polish, providers, selection, stt
 from .config import Config
 from .history import History
 from .history_ui import HistoryDialog
 from .hotkeys import HotkeyManager
+from . import claude_bridge
+from .claude_island import ClaudeIsland
+from .edit_panel import EditPanel
+from .jump_panel import JumpPanel
 from .hud import Hud
 from .settings_ui import MODE_LABELS, TONE_LABELS, SettingsDialog
 
 APP_TITLE = "Шёпот"
+
+# когда сверять вставленный текст с окном: через 20 с и через минуту, плюс при
+# следующем нажатии горячей клавиши; дольше 10 минут вставку не помним
+LEARN_CHECKS_MS = (20_000, 60_000)
+LEARN_WINDOW_S = 600
 
 IDLE_COLOR = QColor(210, 214, 224)
 ACTIVE_COLOR = QColor(96, 205, 255)
@@ -45,6 +56,20 @@ def make_icon(color: QColor) -> QIcon:
     return QIcon(pixmap)
 
 
+def _log_edit(info: dict) -> None:
+    """Журнал поиска выделения: какое окно, каким способом, сколько символов. Сам текст не пишем."""
+    try:
+        from .config import CONFIG_DIR
+        path = CONFIG_DIR / "edit.log"
+        if path.exists() and path.stat().st_size > 64_000:
+            path.unlink()
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"{stamp} {info}\n")
+    except Exception:
+        pass
+
+
 def _beep(frequency: int, duration: int) -> None:
     threading.Thread(
         target=lambda: _safe_beep(frequency, duration), daemon=True
@@ -67,11 +92,18 @@ class Controller(QObject):
     resultReady = Signal(str, float)
     inserted = Signal(bool)
     failed = Signal(str)
+    selectionFound = Signal(str)
+    editReady = Signal(str)
+    termsLearned = Signal(list)
+    requestJump = Signal()
+    jumpStep = Signal(str)
+    jumpDone = Signal(int)
 
     def __init__(self, app: QApplication) -> None:
         super().__init__()
         self.app = app
         self.cfg = Config()
+        island_place.PLACE.bind(self.cfg)          # остров помнит, куда его перетащили
         self.history = History(int(self.cfg.get("history_limit")))
         self.hud = Hud()
         self.recorder = audio.Recorder(
@@ -84,8 +116,32 @@ class Controller(QObject):
             on_cancel=self.requestCancel.emit,
         )
         self._busy = False
+        # голосовая правка: выделение забирается в фоне, пока человек говорит
+        self._selection: str | None = None
+        self._selection_ready = threading.Event()
+        self._selection_ready.set()
+        self._job_is_edit = False
+        self._target_window = 0
+        self._target_is_terminal = False
+        self._last_insert: tuple[int, str, float] | None = None
+        self.edit_panel = EditPanel()
         self._settings_dialog: SettingsDialog | None = None
         self._history_dialog: HistoryDialog | None = None
+
+        # прыжок в проект: своя клавиша, отдельная от диктовки
+        self.jump_keys = HotkeyManager(
+            on_press=self.requestJump.emit, on_release=lambda: None, on_cancel=lambda: None,
+        )
+        self.jump_panel = JumpPanel()
+        self.jump_panel.chosen.connect(self._jump_to)
+        self.jump_panel.optionsChanged.connect(self._jump_options)
+        self.jump_panel.pinToggled.connect(self._jump_pin)
+        self.requestJump.connect(self.open_jump)
+        self.jumpStep.connect(self._jump_progress)
+        self.jumpDone.connect(self._jump_finished)
+        self._jumping: dict | None = None
+        jump.warm_tools()                      # codex ищется около секунды — заранее
+        self.ghost = ghost.Ghost(parent=self, dictation_hud=self.hud)
 
         self.clipshot = clipshot.Watcher(self.cfg, parent=self)
         self.clipshot.captured.connect(self._report_screenshot)
@@ -97,6 +153,11 @@ class Controller(QObject):
         self.resultReady.connect(self._deliver)
         self.inserted.connect(self._report_insertion)
         self.failed.connect(self._show_error)
+        self.selectionFound.connect(self._open_edit_panel)
+        self.editReady.connect(self._deliver_edit)
+        self.termsLearned.connect(self._remember_terms)
+        self.edit_panel.chosen.connect(self._run_edit)
+        self.edit_panel.cancelled.connect(self._edit_cancelled)
 
         self.tray = QSystemTrayIcon(make_icon(IDLE_COLOR))
         self.tray.activated.connect(self._tray_activated)
@@ -105,6 +166,14 @@ class Controller(QObject):
 
         self._apply_hotkeys(announce=False)
         self.clipshot.set_enabled(bool(self.cfg.get("clipshot")))
+        self.ghost.set_enabled(bool(self.cfg.get("ghost")))
+        # остров сессий Claude Code: мост слушает хуки на 127.0.0.1
+        self.claude_bridge = claude_bridge.Bridge()
+        self.claude_island = ClaudeIsland(self.claude_bridge, self.hud)
+        self.ghost.claude_island = self.claude_island
+        if not self.claude_bridge.start():
+            _log_edit({"claude_bridge": self.claude_bridge.error})
+        self._sync_claude_island()
         self._warm_up()
         # первый запуск: без ключа диктовать нечем — сразу открываем настройки
         QTimer.singleShot(500, self._prompt_for_key_if_needed)
@@ -135,6 +204,10 @@ class Controller(QObject):
         )
         self.clipshot_action.toggled.connect(self.set_clipshot)
         menu.addAction(self.clipshot_action)
+
+        self.jump_action = QAction("Прыжок в проект…", menu)
+        self.jump_action.triggered.connect(self.open_jump)
+        menu.addAction(self.jump_action)
         menu.addSeparator()
 
         mode_menu = menu.addMenu("Режим")
@@ -237,8 +310,92 @@ class Controller(QObject):
                     None, APP_TITLE, f"Не удалось назначить горячую клавишу: {exc}"
                 )
             return False
+        finally:
+            self._apply_jump_key(announce)
         self._update_tooltip()
         return True
+
+    def _apply_jump_key(self, announce: bool) -> None:
+        if not self.cfg.get("jump"):
+            self.jump_keys.stop()
+            return
+        key = self.cfg.get("jump_hotkey") or "win+j"
+        try:
+            self.jump_keys.apply(key, "ptt", "")
+        except Exception as exc:
+            _log_edit({"jump_hotkey": str(exc)})
+            if announce:
+                QMessageBox.warning(None, APP_TITLE, f"Не удалось назначить клавишу прыжка: {exc}")
+            return
+        self.jump_action.setText(f"Прыжок в проект…\t{hotkeys.display(key)}")
+
+    # ------------------------------------------------------------ прыжок
+    def open_jump(self) -> None:
+        if self.jump_panel.isVisible():
+            self.jump_panel.close_panel()          # повторное нажатие закрывает
+            return
+        root = Path(self.cfg.get("jump_root") or str(jump.default_root()))
+        projects = jump.scan(root, self.cfg.get("jump_recent") or {}, self.cfg.get("jump_pinned") or [])
+        if not projects:
+            self._show_error(f"Нет проектов в папке {root}")
+            return
+        self.jump_panel.open(projects, self.cfg.get("jump_options") or {},
+                             self.cfg.get("jump_pinned") or [], root.name)
+
+    def _jump_options(self, key: str, options: dict) -> None:
+        saved = dict(self.cfg.get("jump_options") or {})
+        saved[key] = options
+        self._set("jump_options", saved)
+
+    def _jump_pin(self, key: str) -> None:
+        pinned = list(self.cfg.get("jump_pinned") or [])
+        if key in pinned:
+            pinned.remove(key)
+        else:
+            pinned.append(key)
+        self._set("jump_pinned", pinned)
+
+    def _jump_to(self, project, options: dict, terminal_only: bool) -> None:
+        try:
+            plan = jump.start(project, options, terminal_only,
+                              on_step=self.jumpStep.emit, on_done=self.jumpDone.emit)
+        except OSError as exc:
+            self._show_error(f"Не открылось: {exc}")
+            return
+        recent = dict(self.cfg.get("jump_recent") or {})
+        recent[str(project.path)] = time.time()
+        # помним последние 30 проектов
+        self._set("jump_recent", dict(sorted(recent.items(), key=lambda kv: kv[1])[-30:]))
+        self._jumping = {"project": project, "plan": plan, "done": set()}
+        self._jump_progress()
+
+    def _jump_progress(self, part: str = "") -> None:
+        state = self._jumping
+        if not state or not self.cfg.get("hud"):
+            return
+        if part:
+            state["done"].add(part)
+        names = {"code": "VS Code", "terminal": "терминал"}
+        steps = [names[p] + (" ✓" if p in state["done"] else " …") for p in state["plan"].parts]
+        if state["plan"].web:
+            steps.append("браузер ✓")
+        message = " · ".join([state["project"].name] + steps)
+        self.hud.show_state("processing", message)
+
+    def _jump_finished(self, count: int) -> None:
+        state, self._jumping = self._jumping, None
+        if not state or not self.cfg.get("hud"):
+            return
+        plan, project = state["plan"], state["project"]
+        if not plan.parts:
+            text = f"{project.name} · ничего не отмечено" if not plan.web else f"{project.name} · браузер"
+        elif "reuse" in (plan.editor, plan.terminal) and "new" not in (plan.editor, plan.terminal):
+            text = f"{project.name} · переключился"
+        elif count < len(plan.parts):
+            text = f"{project.name} · открываю дольше обычного"
+        else:
+            text = f"{project.name} · {count} " + ("окно готово" if count == 1 else "окна готовы")
+        self.hud.show_state("done", text, hide_after=2.4, hint=project.branch)
 
     # ------------------------------------------------------------------ поток
     def toggle_dictation(self) -> None:
@@ -248,12 +405,19 @@ class Controller(QObject):
             self.start_dictation()
 
     def start_dictation(self) -> None:
+        self._check_learning()                        # до новой вставки сверяем прошлую
+        if self.edit_panel.isVisible():
+            self.edit_panel.cancel()                  # повторное нажатие закрывает панель правки
+            return
         if self._busy or self.recorder.is_recording:
             return
         if providers.missing_key(self.cfg) is not None:
             self._show_error("Не указан ключ API — откройте настройки")
             self._prompt_for_key_if_needed()
             return
+        # окно, в котором человек работал: в него вернём фокус и вставим правку
+        self._target_window = selection.foreground_window()
+        self._target_is_terminal = selection.is_terminal(selection.foreground_app())
         started = self.recorder.start(
             device_index=self.cfg.get("input_device"),
             max_seconds=float(self.cfg.get("max_seconds")),
@@ -265,6 +429,83 @@ class Controller(QObject):
             _beep(880, 55)
         if self.cfg.get("hud"):
             self.hud.show_state("listening")
+        # Запись идёт сразу, чтобы не потерять первые слова. Параллельно смотрим,
+        # нет ли выделения: если есть — это не диктовка, а правка, запись отменяем.
+        self._selection = None
+        if self.cfg.get("voice_edit"):
+            self._selection_ready.clear()
+            threading.Thread(target=self._grab_selection, daemon=True,
+                             name="shepot-selection").start()
+
+    def _grab_selection(self) -> None:
+        try:
+            text = selection.grab(before_send=lambda: self.hotkeys.ignore_other_keys(0.5))
+        except Exception as exc:
+            text = None
+            selection.last["error"] = repr(exc)
+        self._selection = text
+        self._selection_ready.set()
+        _log_edit(selection.last)
+        if text:
+            self.selectionFound.emit(text)
+
+    def _open_edit_panel(self, text: str) -> None:
+        if self.recorder.is_recording:
+            self.recorder.cancel()
+            self.hotkeys.notify_stopped()
+        self._busy = False                            # короткое удержание уже ушло в _process — он отступит
+        self.tray.setIcon(make_icon(IDLE_COLOR))
+        anchor = self.hud.capsule_anchor()
+        width = self.hud.hand_over()
+        self.edit_panel.open(text, anchor, width)
+
+    def _run_edit(self, instruction: str, width: float) -> None:
+        source = self._selection
+        if not source:
+            return
+        self._busy = True
+        self.tray.setIcon(make_icon(BUSY_COLOR))
+        if self.cfg.get("hud"):
+            self.hud.show_state("processing", "Переписываю", from_width=width)
+        snapshot = _Snapshot(self.cfg.as_dict())
+
+        def work() -> None:
+            try:
+                text = polish.edit(source, instruction, snapshot)
+            except Exception as exc:                  # сеть, ключ, отказ модели
+                self.failed.emit(f"Не переписал: {exc}")
+                return
+            self.editReady.emit(text)
+
+        threading.Thread(target=work, daemon=True, name="shepot-edit").start()
+
+    def _deliver_edit(self, text: str) -> None:
+        self._busy = False
+        self.tray.setIcon(make_icon(IDLE_COLOR))
+        self._job_is_edit = True
+        self.history.add(text, "edit", 0.0)
+        target = self._target_window
+        method = self.cfg.get("insert_method")
+        restore = bool(self.cfg.get("restore_clipboard"))
+        delay = float(self.cfg.get("restore_delay"))
+
+        def deliver() -> None:
+            # панель забрала фокус — возвращаем его окну, где осталось выделение
+            if not selection.focus_window(target):
+                inserter.set_clipboard_text(text)
+                self.inserted.emit(False)
+                return
+            try:
+                ok = inserter.insert(text, method=method,
+                                     restore_clipboard=restore, restore_delay=delay)
+            except Exception:
+                ok = False
+            self.inserted.emit(ok)
+
+        threading.Thread(target=deliver, daemon=True, name="shepot-insert").start()
+
+    def _edit_cancelled(self) -> None:
+        selection.focus_window(self._target_window)
 
     def finish_dictation(self) -> None:
         if not self.recorder.is_recording:
@@ -283,7 +524,8 @@ class Controller(QObject):
         seconds = _wav_seconds(wav)
         if seconds < float(self.cfg.get("min_seconds")):
             self.tray.setIcon(make_icon(IDLE_COLOR))
-            self.hud.hide_now()
+            if self._selection_ready.is_set() and not self._selection:
+                self.hud.hide_now()                   # иначе остров вот-вот уступит место панели
             return
 
         self._busy = True
@@ -304,8 +546,13 @@ class Controller(QObject):
 
     def _process(self, wav: bytes, seconds: float) -> None:
         snapshot = _Snapshot(self.cfg.as_dict())
+        self._selection_ready.wait(1.0)               # очень короткая запись: выделение ещё в пути
+        if self._selection:
+            return                                    # это была правка: ею занимается панель
+        self._job_is_edit = False
         try:
             transcript = stt.transcribe(wav, snapshot)
+            transcript = learn.apply(transcript, snapshot.get("replacements") or {})
             text = polish.polish(transcript, snapshot)
         except (stt.SttError, polish.PolishError) as exc:
             self.failed.emit(str(exc))
@@ -339,14 +586,66 @@ class Controller(QObject):
                                      restore_clipboard=restore, restore_delay=delay)
             except Exception:
                 ok = False
+            if ok:
+                # запомнить, что и куда вставили: позже сверим с текстом окна
+                self._last_insert = (selection.foreground_window(), text, time.monotonic())
             self.inserted.emit(ok)
 
         threading.Thread(target=deliver, daemon=True, name="shepot-insert").start()
 
+    # ------------------------------------------------------- обучение словаря
+    def _check_learning(self) -> None:
+        """Человек поправил вставленный текст? Исправленные термины — в словарь."""
+        record = self._last_insert
+        if not record or not self.cfg.get("learn_corrections"):
+            return
+        hwnd, text, at = record
+        if time.monotonic() - at > LEARN_WINDOW_S:
+            self._last_insert = None
+            return
+        if selection.foreground_window() != hwnd:
+            return                                    # человек в другом окне — читать нечего
+
+        def work() -> None:
+            try:
+                document = selection.document_text()
+            except Exception:
+                document = None
+            if document:
+                pairs = learn.find_correction_pairs(text, document)
+                if pairs:
+                    self.termsLearned.emit(pairs)
+
+        threading.Thread(target=work, daemon=True, name="shepot-learn").start()
+
+    def _remember_terms(self, pairs: list) -> None:
+        old_pairs = dict(self.cfg.get("replacements") or {})
+        replacements = learn.remember_pairs(old_pairs, [tuple(p) for p in pairs])
+        vocabulary, added = learn.merge(list(self.cfg.get("vocabulary") or []), [p[1] for p in pairs])
+        if replacements == old_pairs and not added:
+            return                                    # это уже знали
+        self.cfg.set("replacements", replacements)
+        self._set("vocabulary", vocabulary)
+        added = added or [p[1] for p in pairs if old_pairs.get(p[0].lower()) != p[1]]
+        quiet = not (self.recorder.is_recording or self._busy or self.edit_panel.isVisible())
+        if self.cfg.get("hud") and quiet:
+            self.hud.show_state("done", "Запомнил: " + ", ".join(added), hide_after=2.2)
+
     def _report_insertion(self, delivered: bool) -> None:
+        if delivered and not self._job_is_edit:
+            for delay in LEARN_CHECKS_MS:
+                QTimer.singleShot(delay, self._check_learning)
         if self.cfg.get("hud"):
-            message = "Вставлено" if delivered else "Скопировано в буфер"
-            self.hud.show_state("done", message, hide_after=1.2)
+            if self._job_is_edit and delivered and self._target_is_terminal:
+                # в терминале выделен вывод, заменить его нельзя — текст встал в строку ввода
+                self.hud.show_state("done", "Вставлено в строку ввода", hide_after=1.8)
+            elif self._job_is_edit and delivered:
+                self.hud.show_state("done", "Заменено", hide_after=1.8, hint="Ctrl+Z вернёт")
+            elif self._job_is_edit:
+                self.hud.show_state("done", "Готово, вставьте Ctrl+V", hide_after=3.0)
+            else:
+                message = "Вставлено" if delivered else "Скопировано в буфер"
+                self.hud.show_state("done", message, hide_after=1.2)
 
     def _show_error(self, message: str) -> None:
         self._busy = False
@@ -366,6 +665,7 @@ class Controller(QObject):
             return
         self.cancel_dictation()
         self.hotkeys.stop()                    # чтобы поле записи клавиш не срабатывало
+        self.jump_keys.stop()
         dialog = SettingsDialog(self.cfg, focus_keys=focus_keys)
         self._settings_dialog = dialog
         accepted = dialog.exec()
@@ -391,7 +691,12 @@ class Controller(QObject):
         for action in self._tone_group.actions():
             action.setChecked(action.data() == self.cfg.get("tone"))
         self.set_clipshot(bool(self.cfg.get("clipshot")))
+        self.ghost.set_enabled(bool(self.cfg.get("ghost")))
+        self._sync_claude_island()
         self._update_tooltip()
+
+    def _sync_claude_island(self) -> None:
+        self.claude_island.enabled = bool(self.cfg.get("claude_island"))
 
     def open_history(self) -> None:
         if self._history_dialog is not None and self._history_dialog.isVisible():
@@ -406,6 +711,9 @@ class Controller(QObject):
     def quit(self) -> None:
         self.clipshot.set_enabled(False)
         self.hotkeys.stop()
+        self.jump_keys.stop()
+        self.ghost.stop()                      # помощник вернёт окна непрозрачными
+        self.claude_bridge.stop()
         self.recorder.close()
         self.hud.hide_now()
         self.tray.hide()

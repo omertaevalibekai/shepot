@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from . import inserter
 
-MODE_TITLES = {"clean": "чистовик", "raw": "как есть", "translate": "перевод"}
+MODE_TITLES = {"clean": "чистовик", "raw": "как есть", "translate": "перевод", "edit": "правка"}
 
 
 class HistoryDialog(QDialog):
