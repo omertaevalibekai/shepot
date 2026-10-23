@@ -27,7 +27,7 @@ dictation works in ~99 languages.
 | **Insertion** | Via the clipboard, by simulated typing, or copy only |
 | **History** | Recent dictations, in case the text didn't make it to the window |
 | **Live transcription** | Long dictation is cut at pauses and transcribed while you speak, so the text lands almost as soon as you stop |
-| **Window context** | Names and terms from the window you dictate into are spelled right the first time |
+| **Window context** | Optional, off by default: names and terms from the window you dictate into are spelled right the first time |
 | **Stats** | Words dictated, time saved, streak, a 30-day chart; copy it as a picture to share |
 | **Island** | A black capsule at the bottom of the screen; drag it anywhere, it snaps to magnets |
 | **Claude Code** | The island shows what your Claude Code sessions are doing and lets you approve commands |
