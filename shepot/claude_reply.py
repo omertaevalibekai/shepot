@@ -16,8 +16,12 @@
 from __future__ import annotations
 
 import ctypes
+import json
+import os
 import socket
 import struct
+import subprocess
+import sys
 import threading
 from ctypes import wintypes
 
@@ -30,6 +34,7 @@ GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
 FILE_SHARE_READ, FILE_SHARE_WRITE = 1, 2
 OPEN_EXISTING = 3
 INVALID_HANDLE = wintypes.HANDLE(-1).value
+DETACHED_PROCESS = 0x00000008
 TCP_TABLE_OWNER_PID_CONNECTIONS = 4
 AF_INET = 2
 
@@ -61,6 +66,7 @@ _k32.WriteConsoleInputW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_InputRecord
                                     ctypes.POINTER(wintypes.DWORD)]
 _k32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
 _k32.CloseHandle.argtypes = [wintypes.HANDLE]
+_k32.GetConsoleProcessList.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]
 
 
 def records(text: str, submit: bool = True) -> list[_InputRecord]:
@@ -86,10 +92,36 @@ def records(text: str, submit: bool = True) -> list[_InputRecord]:
     return result
 
 
+def _has_own_console() -> bool:
+    buf = (wintypes.DWORD * 1)()
+    return _k32.GetConsoleProcessList(buf, 1) > 0
+
+
 def send(pid: int, text: str, submit: bool = True) -> None:
     """Печатает text в консоль процесса pid и (по умолчанию) жмёт в ней Enter."""
     if not pid:
         raise SendError("неизвестен процесс сессии")
+    if _has_own_console():
+        # Шёпот запущен из консоли (исходники, тесты): FreeConsole отвязал бы его от
+        # неё навсегда — делаем то же в отдельном процессе без консоли.
+        return _send_in_helper(pid, text, submit)
+    _send_here(pid, text, submit)
+
+
+def _send_in_helper(pid: int, text: str, submit: bool) -> None:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = ("import json,sys;from shepot.claude_reply import _send_here,SendError\n"
+            "a=json.loads(sys.argv[1])\n"
+            "try:\n _send_here(*a)\n"
+            "except SendError as e:\n print(e,end='');sys.exit(3)")
+    result = subprocess.run([sys.executable, "-c", code, json.dumps([pid, text, submit])],
+                            cwd=root, capture_output=True, text=True, encoding="utf-8",
+                            creationflags=DETACHED_PROCESS, timeout=15)
+    if result.returncode:
+        raise SendError(result.stdout.strip() or result.stderr.strip()[-300:] or "помощник упал")
+
+
+def _send_here(pid: int, text: str, submit: bool = True) -> None:
     batch = records(text, submit)
     if not batch:
         return

@@ -42,6 +42,8 @@ def test_send_reaches_a_real_console(tmp_path):
     finally:
         proc.kill()
     assert out.read_text(encoding="utf-8") == "Проверь тесты, потом закоммить"
+    # своя консоль (если была) не потеряна: подпроцессы запускаются как раньше
+    assert subprocess.run([sys.executable, "-c", "print(1)"], capture_output=True).returncode == 0
 
 
 def test_send_to_missing_process_fails_clearly():
