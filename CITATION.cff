@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Shepot: voice typing for Windows"
+abstract: >-
+  Voice typing for Windows: dictate, and polished text is pasted into the
+  active window. Cloud (OpenAI) or local Whisper transcription, cleanup by
+  GPT or Claude.
+authors:
+  - given-names: Alibek
+    family-names: Omertaev
+repository-code: "https://github.com/omertaevalibekai/shepot"
+license: MIT
+keywords:
+  - speech recognition
+  - whisper
+  - voice typing
+  - windows
+  - dictation
