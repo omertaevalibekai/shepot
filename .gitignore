@@ -8,3 +8,10 @@ assets/shepot.png
 
 # Локальные заметки для Claude Code
 CLAUDE.local.md
+
+.venv/
+.pytest_cache/
+.ruff_cache/
+.env
+.env.*
+!.env.example
