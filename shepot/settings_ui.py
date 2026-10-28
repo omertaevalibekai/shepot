@@ -1,17 +1,17 @@
-"""Окно настроек в духе iOS: разделы слева, группы-карточки справа.
+"""Окно настроек в духе iOS: разделы слева, группы-карточки справа, светлая и тёмная тема.
 
-Значения читаются из виджетов только в _accept: окно закрывается кнопкой
+Значения читаются из виджетов только при сохранении: окно закрывается кнопкой
 «Готово», крестиком или Esc — и всё сохраняется (как в настройках iPhone).
-Смена языка сохраняет введённое и пересобирает окно уже на новом языке.
+Смена языка или оформления сохраняет введённое и пересобирает окно заново.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, QThread, Signal
-from PySide6.QtGui import QFont, QPainter
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QThread, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QDoubleSpinBox, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit,
+    QMessageBox, QPushButton, QScrollArea, QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from . import __version__, audio, claude_hooks, clipshot, hotkeys, i18n, ios, jump, logo, providers, secrets, startup
@@ -44,7 +44,8 @@ ICONS = {
     "shots": "M 4 8 L 4 5 L 7 5; M 17 5 L 20 5 L 20 8; M 20 16 L 20 19 L 17 19; M 7 19 L 4 19 L 4 16; M 9 12 L 15 12",
 }
 COLORS = {"general": "#8E8E93", "keys": "#FF9F0A", "text": "#0A84FF", "engine": "#BF5AF2",
-          "insert": "#34C759", "claude": "#D97757", "windows": "#5E5CE6", "shots": "#30B0C7"}
+          "insert": "#30D158", "claude": "#D97757", "windows": "#5E5CE6", "shots": "#32ADE6"}
+THEMES = (("auto", "Как в Windows"), ("dark", "Тёмная"), ("light", "Светлая"))
 
 
 # Скан-коды модификаторов (с битом расширенной клавиши 0x100): только по ним
@@ -76,7 +77,7 @@ def _vk_name(vk: int) -> str:
 
 
 class KeyCapture(QPushButton):
-    """Поле клавиши: нажал на него — оно ждёт клавишу или кнопку мыши.
+    """Поле клавиши: колпачки клавиш; нажал на него — оно ждёт клавишу или кнопку мыши.
 
     Сочетание фиксируется, когда отпущены все клавиши: так одиночный
     модификатор (правый Ctrl) тоже можно назначить. Esc без других клавиш
@@ -89,46 +90,84 @@ class KeyCapture(QPushButton):
         super().__init__(parent)
         self._value = value
         self._listening = False
+        self._hover = False
         self._held: list[str] = []
         self._peak: list[str] = []
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(36)
-        self.setMinimumWidth(150)
         self.setFocusPolicy(Qt.StrongFocus)
+        self.setFlat(True)
         self.clicked.connect(self._start)
-        self._refresh()
+        self._resize()
 
     def value(self) -> str:
         return self._value
 
     def set_value(self, value: str) -> None:
         self._value = value
-        self._refresh()
+        self._resize()
         self.changed.emit(value)
 
-    def _refresh(self) -> None:
+    def _resize(self) -> None:
         if self._listening:
-            self.setText(t("Нажмите сочетание…  Esc — отмена"))
-            self.setStyleSheet(
-                f"QPushButton {{ padding: 0 14px; border-radius: 9px; border: 1.5px solid {ios.ACCENT};"
-                f" background: #EAF2FF; color: {ios.ACCENT_TEXT}; font-family: '{ios.FONT}'; font-size: 10pt; }}"
-            )
+            width = self.fontMetrics().horizontalAdvance(t("Нажмите сочетание…  Esc — отмена")) + 40
+        elif self._value:
+            width = ios.keycaps_width(hotkeys.display_parts(self._value)) + 12
+        else:
+            width = self.fontMetrics().horizontalAdvance(t("Назначить")) + 40
+        self.setFixedWidth(int(max(110, width)))
+        self.update()
+
+    def enterEvent(self, event) -> None:
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, _event) -> None:
+        th = ios.theme()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if self._listening:
+            accent = QColor(th.accent)
+            fill = QColor(accent)
+            fill.setAlpha(40)
+            p.setBrush(fill)
+            p.setPen(QPen(accent, 1.5))
+            p.drawRoundedRect(r, 10, 10)
+            p.setPen(QColor(th.link))
+            p.setFont(ios.font(10))
+            p.drawText(r, Qt.AlignCenter, t("Нажмите сочетание…  Esc — отмена"))
             return
-        self.setText("  +  ".join(hotkeys.display_parts(self._value)) if self._value else t("Назначить"))
-        self.setStyleSheet(
-            f"QPushButton {{ padding: 0 14px; border-radius: 9px; border: 1.5px solid transparent;"
-            f" background: #F2F2F7; color: {ios.INK}; font-family: '{ios.FONT}'; font-size: 10pt;"
-            f" font-weight: {'600' if self._value else '400'}; }}"
-            f"QPushButton:hover, QPushButton:focus {{ border-color: {ios.ACCENT}; }}"
-            "QPushButton:disabled { color: #A0A0A6; }"
-        )
+        if not self._value:
+            p.setPen(QPen(QColor(th.accent if self._hover or self.hasFocus() else th.faint), 1, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(r, 10, 10)
+            p.setPen(QColor(th.link))
+            p.setFont(ios.font(10, QFont.DemiBold))
+            p.drawText(r, Qt.AlignCenter, t("Назначить"))
+            return
+        if self._hover or self.hasFocus():
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(th.raised))
+            p.drawRoundedRect(r, 10, 10)
+        ios.draw_keycaps(p, r.adjusted(0, 0, -5, 0), hotkeys.display_parts(self._value))
+        if not self.isEnabled():
+            veil = QColor(th.card)
+            veil.setAlpha(150)
+            p.fillRect(self.rect(), veil)
 
     def _start(self) -> None:
         if self._listening:
             return
         self._listening = True
         self._held, self._peak = [], []
-        self._refresh()
+        self._resize()
         self.setFocus()
         self.grabKeyboard()
         self.grabMouse()
@@ -140,7 +179,7 @@ class KeyCapture(QPushButton):
         if value is not None:
             self._value = value
             self.changed.emit(value)
-        self._refresh()
+        self._resize()
 
     def _ident(self, event) -> str:
         scan, vk = event.nativeScanCode(), event.nativeVirtualKey()
@@ -227,10 +266,11 @@ class _CheckThread(QThread):
 
 
 class KeyField(QWidget):
-    """Ключ API в строке: скрытое поле, глазок, «Проверить» и метка результата."""
+    """Ключ API в строке: скрытое поле, «Показать», «Проверить» и метка результата."""
 
     def __init__(self, name: str, checker, placeholder: str, parent=None) -> None:
         super().__init__(parent)
+        th = ios.theme()
         self.name = name
         self._checker = checker
         self._thread: _CheckThread | None = None
@@ -246,11 +286,11 @@ class KeyField(QWidget):
             self.edit.setPlaceholderText(t("из переменной среды"))
         else:
             self.edit.setPlaceholderText(placeholder)
-        self.edit.setFixedWidth(190)
+        self.edit.setFixedSize(190, 30)
         self.edit.setStyleSheet(
-            "QLineEdit { border: 0; border-radius: 8px; background: #F2F2F7; padding: 6px 10px;"
-            " font-family: Consolas, monospace; font-size: 10pt; color: #3A3A3F; }"
-            f"QLineEdit:focus {{ background: #FFFFFF; border: 1.5px solid {ios.ACCENT}; }}")
+            f"QLineEdit {{ border: 1.5px solid transparent; border-radius: 9px; background: {th.raised};"
+            f" padding: 0 10px; font-family: Consolas, monospace; font-size: 10pt; color: {th.ink}; }}"
+            f"QLineEdit:focus {{ border-color: {th.accent}; }}")
         self.edit.textEdited.connect(lambda: self._say("", None))
         line.addWidget(self.edit)
 
@@ -258,7 +298,6 @@ class KeyField(QWidget):
         self.reveal.setCheckable(True)
         self.reveal.toggled.connect(self._toggle_reveal)
         line.addWidget(self.reveal)
-
         self.check_button = ios.pill_button(t("Проверить"))
         self.check_button.clicked.connect(self._check)
         line.addWidget(self.check_button)
@@ -288,6 +327,7 @@ class KeyField(QWidget):
         self._say(message, ok)
 
     def _say(self, message: str, ok: bool | None) -> None:
+        th = ios.theme()
         if ok is None:
             ios.set_badge(self.status, message, "")
         else:
@@ -295,10 +335,8 @@ class KeyField(QWidget):
         if self.row is not None:
             self.row.subtitle.setText(message if ok is not None else self.row.property("hint") or "")
             self.row.subtitle.setVisible(bool(self.row.subtitle.text()))
-            if ok is False:
-                self.row.subtitle.setStyleSheet("color: #B42318; background: transparent;")
-            else:
-                self.row.subtitle.setStyleSheet(f"color: {ios.MUTED}; background: transparent;")
+            color = th.bad[1] if ok is False else th.muted
+            self.row.subtitle.setStyleSheet(f"color: {color}; background: transparent;")
 
 
 class LogoMark(QWidget):
@@ -329,29 +367,37 @@ def _line(text: str, placeholder: str = "", width: int = 240) -> QLineEdit:
 
 
 class Page(QScrollArea):
-    """Раздел справа: большой заголовок, строка пояснения, группы."""
+    """Раздел справа: крупный заголовок, строка пояснения, группы."""
 
     def __init__(self, title: str, lead: str) -> None:
         super().__init__()
+        th = ios.theme()
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.NoFrame)
-        self.setStyleSheet(f"QScrollArea {{ background: {ios.BG}; border: 0; }}"
-                           "QScrollBar:vertical { width: 10px; background: transparent; margin: 4px 2px; }"
-                           "QScrollBar::handle:vertical { background: #C7C7CC; border-radius: 3px; min-height: 30px; }"
-                           "QScrollBar::add-line, QScrollBar::sub-line { height: 0; }")
+        handle = "rgba(255,255,255,0.18)" if th.dark else "rgba(0,0,0,0.22)"
+        self.setStyleSheet(f"QScrollArea {{ background: {th.bg}; border: 0; }}"
+                           "QScrollBar:vertical { width: 10px; background: transparent; margin: 6px 2px; }"
+                           f"QScrollBar::handle:vertical {{ background: {handle}; border-radius: 3px; min-height: 40px; }}"
+                           "QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page,"
+                           " QScrollBar::sub-page { height: 0; background: transparent; }")
         inner = QWidget()
-        inner.setStyleSheet(f"background: {ios.BG};")
+        inner.setObjectName("pageInner")
+        inner.setStyleSheet(f"#pageInner {{ background: {th.bg}; }}")
         outer = QHBoxLayout(inner)
-        outer.setContentsMargins(36, 28, 36, 36)
+        outer.setContentsMargins(40, 30, 40, 40)
         column = QWidget()
         column.setMaximumWidth(660)
         self.body = QVBoxLayout(column)
         self.body.setContentsMargins(0, 0, 0, 0)
-        self.body.setSpacing(24)
+        self.body.setSpacing(26)
         head = QVBoxLayout()
         head.setSpacing(6)
-        head.addWidget(ios.label(title, 22, ios.INK, QFont.Bold))
-        head.addWidget(ios.label(lead, 10.5, ios.MUTED, wrap=True))
+        title_label = ios.label(title, 24, "ink", QFont.Bold, display=True)
+        f = title_label.font()
+        f.setLetterSpacing(QFont.PercentageSpacing, 98)
+        title_label.setFont(f)
+        head.addWidget(title_label)
+        head.addWidget(ios.label(lead, 10.5, "muted", wrap=True))
         self.body.addLayout(head)
         outer.addStretch(1)
         outer.addWidget(column, 100)
@@ -370,36 +416,66 @@ class Page(QScrollArea):
         self.body.addStretch(1)
 
 
+class HeroCard(ios.Card):
+    """Карточка приложения наверху «Основного» — как карточка Apple ID в настройках iPhone."""
+
+    def __init__(self, key_ok: bool) -> None:
+        super().__init__()
+        row = QHBoxLayout(self)
+        row.setContentsMargins(18, 16, 18, 16)
+        row.setSpacing(16)
+        row.addWidget(LogoMark(64))
+        texts = QVBoxLayout()
+        texts.setSpacing(3)
+        texts.addStretch(1)
+        texts.addWidget(ios.label(t("Шёпот"), 16, "ink", QFont.DemiBold, display=True))
+        texts.addWidget(ios.label(t("Голос в текст в любом окне · версия {v}", v=__version__), 9.5, "muted"))
+        texts.addStretch(1)
+        row.addLayout(texts, 1)
+        row.addWidget(ios.badge(t("Ключ OpenAI подключён") if key_ok else t("Нужен ключ OpenAI"),
+                                "ok" if key_ok else "warn"), 0, Qt.AlignVCenter)
+
+
 class SettingsDialog(QDialog):
     def __init__(self, cfg, parent=None, focus_keys: bool = False) -> None:
         super().__init__(parent)
         self.cfg = cfg
-        self.setWindowTitle(t("Шёпот — настройки"))
-        self.setStyleSheet(f"QDialog {{ background: {ios.BG}; }} QToolTip {{ color: {ios.INK}; }}")
-        self.setMinimumSize(900, 600)
+        ios.set_theme(cfg.get("ui_theme") or "dark")
+        self.setMinimumSize(920, 620)
         screen = self.screen().availableGeometry() if self.screen() else None
-        self.resize(1040, min(760, int(screen.height() * 0.88)) if screen else 760)
+        self.resize(1060, min(780, int(screen.height() * 0.88)) if screen else 780)
         self._root = QHBoxLayout(self)
         self._root.setContentsMargins(0, 0, 0, 0)
         self._root.setSpacing(0)
         self._closing = False
+        self._section = "general"
+        self._fade: QPropertyAnimation | None = None
         self._build("general")
         if focus_keys:
             self.openai_key.edit.setFocus()
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        ios.dark_title_bar(self, ios.theme().sidebar)
+
     # ---------------------------------------------------------------- каркас
     def _build(self, section: str) -> None:
+        th = ios.theme()
         while self._root.count():
             item = self._root.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         self.setWindowTitle(t("Шёпот — настройки"))
+        self.setStyleSheet(f"QDialog {{ background: {th.bg}; }}"
+                           f"QToolTip {{ color: {th.ink}; background: {th.raised}; border: 1px solid {th.line};"
+                           " border-radius: 6px; padding: 4px 8px; }")
 
         self.stack = QStackedWidget()
+        self.stack.setStyleSheet(f"QStackedWidget {{ background: {th.bg}; }}")
         self.pages: dict[str, Page] = {}
         self.nav: dict[str, ios.NavButton] = {}
         sections = [
-            ("general", t("Основное"), t("Язык, ключи доступа к моделям и то, как Шёпот ведёт себя на компьютере."), self._general),
+            ("general", t("Основное"), t("Язык, оформление, ключи доступа к моделям и то, как Шёпот ведёт себя на компьютере."), self._general),
             ("keys", t("Горячие клавиши"), t("Любая клавиша, сочетание, одиночный правый Ctrl или боковая кнопка мыши."), self._hotkeys),
             ("text", t("Текст"), t("Что модель делает с расшифровкой, прежде чем текст попадёт в окно."), self._text),
             ("engine", t("Распознавание"), t("Где ваш голос превращается в текст и какая модель его чистит."), self._engine),
@@ -418,39 +494,35 @@ class SettingsDialog(QDialog):
         self._root.addWidget(self._sidebar(sections))
         self._root.addWidget(self.stack, 1)
         self._sync()
-        self._open(section if section in self.pages else "general")
+        self._open(section if section in self.pages else "general", animate=False)
+        if self.isVisible():
+            ios.dark_title_bar(self, th.sidebar)
 
     def _sidebar(self, sections) -> QWidget:
+        th = ios.theme()
         side = QFrame()
         side.setObjectName("side")
-        side.setFixedWidth(290)
-        side.setStyleSheet(f"#side {{ background: {ios.SIDEBAR}; border-right: 1px solid #E1E1E6; }}")
+        side.setFixedWidth(280)
+        side.setStyleSheet(f"#side {{ background: {th.sidebar}; border-right: 1px solid {th.line}; }}")
         col = QVBoxLayout(side)
-        col.setContentsMargins(14, 22, 14, 16)
-        col.setSpacing(14)
+        col.setContentsMargins(14, 18, 14, 16)
+        col.setSpacing(12)
 
-        head = QFrame()
-        head.setObjectName("head")
-        head.setStyleSheet("#head { background: #FFFFFF; border-radius: 14px; }")
-        row = QHBoxLayout(head)
-        row.setContentsMargins(12, 12, 12, 12)
-        row.setSpacing(12)
-        row.addWidget(LogoMark(46))
-        texts = QVBoxLayout()
-        texts.setSpacing(2)
-        texts.addWidget(ios.label(t("Шёпот"), 12.5, ios.INK, QFont.DemiBold))
-        key_state = t("ключ подключён") if secrets.get(secrets.OPENAI) else t("нет ключа OpenAI")
-        texts.addWidget(ios.label(t("Версия {v}", v=__version__) + " · " + key_state, 9, ios.MUTED))
-        row.addLayout(texts, 1)
-        col.addWidget(head)
+        head = QHBoxLayout()
+        head.setContentsMargins(6, 0, 0, 4)
+        head.setSpacing(10)
+        head.addWidget(LogoMark(30))
+        head.addWidget(ios.label(t("Настройки"), 15, "ink", QFont.Bold, display=True), 1)
+        col.addLayout(head)
 
         self.search = QLineEdit()
         self.search.setPlaceholderText(t("Поиск"))
         self.search.setClearButtonEnabled(True)
         self.search.setFixedHeight(36)
         self.search.setStyleSheet(
-            "QLineEdit { border: 0; border-radius: 10px; background: #E6E6EB; padding: 0 12px;"
-            f" font-family: '{ios.FONT}'; font-size: 10.5pt; color: {ios.INK}; }}")
+            f"QLineEdit {{ border: 1.5px solid transparent; border-radius: 10px; background: {th.raised};"
+            f" padding: 0 12px; font-family: '{ios.FONT}'; font-size: 10.5pt; color: {th.ink}; }}"
+            f"QLineEdit:focus {{ border-color: {th.accent}; }}")
         self.search.textChanged.connect(self._filter)
         col.addWidget(self.search)
 
@@ -461,24 +533,40 @@ class SettingsDialog(QDialog):
             button.clicked.connect(lambda _=False, k=key: self._open(k))
             self.nav[key] = button
             nav.addWidget(button)
-        self.nothing = ios.label(t("Ничего не нашлось"), 10, ios.MUTED)
+            if key == "general":
+                nav.addSpacing(8)                    # «Основное» отдельно, как первая группа в iOS
+        self.nothing = ios.label(t("Ничего не нашлось"), 10, "muted")
         self.nothing.setContentsMargins(12, 10, 0, 0)
         self.nothing.hide()
         nav.addWidget(self.nothing)
         col.addLayout(nav)
         col.addStretch(1)
 
-        done = ios.pill_button(t("Готово"), primary=True)
-        done.setFixedHeight(36)
+        hint = ios.label(t("Изменения сохраняются, когда вы закрываете окно."), 8.8, "faint", wrap=True)
+        hint.setContentsMargins(6, 0, 6, 0)
+        col.addWidget(hint)
+        done = ios.pill_button(t("Готово"), primary=True, height=38)
         done.clicked.connect(self._accept)
         col.addWidget(done)
         return side
 
-    def _open(self, key: str) -> None:
+    def _open(self, key: str, animate: bool = True) -> None:
         for name, button in self.nav.items():
             button.setChecked(name == key)
-        self.stack.setCurrentWidget(self.pages[key])
+        page = self.pages[key]
+        changed = self.stack.currentWidget() is not page
+        self.stack.setCurrentWidget(page)
         self._section = key
+        if animate and changed:
+            effect = QGraphicsOpacityEffect(page)
+            page.setGraphicsEffect(effect)
+            self._fade = QPropertyAnimation(effect, b"opacity", self)
+            self._fade.setDuration(170)
+            self._fade.setStartValue(0.0)
+            self._fade.setEndValue(1.0)
+            self._fade.setEasingCurve(QEasingCurve.OutCubic)
+            self._fade.finished.connect(lambda p=page: p.setGraphicsEffect(None))
+            self._fade.start()
 
     def _filter(self, text: str) -> None:
         query = text.strip().lower()
@@ -503,12 +591,17 @@ class SettingsDialog(QDialog):
 
     # -------------------------------------------------------------- разделы
     def _general(self, page: Page) -> None:
-        g = page.group(t("Язык"))
+        page.body.addWidget(HeroCard(bool(secrets.get(secrets.OPENAI))))
+
+        g = page.group(t("Оформление"))
         choice = self.cfg.get("ui_language") or "auto"
         self.ui_language = ios.Segmented([(code, t(name) if code == "auto" else name)
                                           for code, name in i18n.LANGUAGES], choice)
         self.ui_language.changed.connect(self._language_changed)
-        self._row(page, g, t("Язык интерфейса"), self.ui_language)
+        self._row(page, g, t("Язык"), self.ui_language)
+        self.ui_theme = ios.Segmented([(code, t(name)) for code, name in THEMES], self.cfg.get("ui_theme") or "dark")
+        self.ui_theme.changed.connect(self._theme_changed)
+        self._row(page, g, t("Тема"), self.ui_theme)
 
         g = page.group(t("Ключи"), t("Ключи шифруются средствами Windows под вашей учётной записью и уходят "
                                      "только в OpenAI и Anthropic. Ключ OpenAI — на platform.openai.com/api-keys."))
@@ -532,6 +625,9 @@ class SettingsDialog(QDialog):
         self._row(page, g, t("Сообщать о новых версиях"), self.check_updates, t("Раз в сутки спрашивать GitHub о релизе"))
 
     def _hotkeys(self, page: Page) -> None:
+        self.island = ios.IslandPreview("")
+        page.body.addWidget(self.island)
+
         g = self.hotkey_group = page.group(t("Диктовка"))
         self.hotkey_mode = ios.Segmented([("toggle", t("Переключатель")), ("ptt", t("Удержание")),
                                           ("pair", t("Две клавиши"))], self.cfg.get("hotkey_mode"))
@@ -713,16 +809,19 @@ class SettingsDialog(QDialog):
 
     # ----------------------------------------------------------- состояние
     def _sync(self) -> None:
+        th = ios.theme()
         mode = self.hotkey_mode.value()
         self.hotkey_row.title.setText({"toggle": t("Старт и стоп"), "ptt": t("Удерживать"),
                                        "pair": t("Начать запись")}[mode])
         ios.show_row(self.stop_row, mode == "pair")
         kind, text = self._hotkey_problem()
-        colors = {"ok": ("#1B7A35", "#E3F7E8"), "warn": ("#9A5B00", "#FFF1DC"), "bad": ("#B42318", "#FDE7E7")}
-        fg, bg = colors[kind]
+        bg, fg = {"ok": th.ok, "warn": th.warn, "bad": th.bad}[kind]
         self.hotkey_verdict.setText(text)
-        self.hotkey_verdict.setStyleSheet(f"QLabel {{ color: {fg}; background: {bg}; border-radius: 10px;"
-                                          " padding: 10px 14px; }")
+        self.hotkey_verdict.setStyleSheet(f"QLabel {{ color: {fg}; background: {bg}; border-radius: 12px;"
+                                          " padding: 11px 16px; }")
+        key = hotkeys.display(self.hotkey_capture.value()) or "—"
+        self.island.caption = (t("Держите {key}, пока говорите", key=key) if mode == "ptt"
+                               else t("Так выглядит запись. Начать — {key}", key=key))
 
         text_mode = self.mode.value()
         provider = self.llm_provider.value()
@@ -769,8 +868,15 @@ class SettingsDialog(QDialog):
         i18n.set_language(code)
         self._build(self._section)
 
+    def _theme_changed(self, code: str) -> None:
+        if not self._save(close=False, theme=code):
+            self.ui_theme.set_value(self.cfg.get("ui_theme") or "dark")
+            return
+        ios.set_theme(code)
+        self._build(self._section)
+
     def _reset_hotkey(self) -> None:
-        self.hotkey_mode.set_value("toggle")
+        self.hotkey_mode.set_value("toggle", animate=True)
         self.hotkey_capture.set_value("ctrl+space")
 
     def _hotkey_problem(self) -> tuple[str, str]:
@@ -849,7 +955,7 @@ class SettingsDialog(QDialog):
             self._closing = True
             self.accept()
 
-    def _save(self, close: bool, language: str | None = None) -> bool:
+    def _save(self, close: bool, language: str | None = None, theme: str | None = None) -> bool:
         kind, problem = self._hotkey_problem()
         if kind == "bad":
             self._open("keys")
@@ -865,6 +971,7 @@ class SettingsDialog(QDialog):
         vocabulary = self.vocabulary.terms()
         self.cfg.update({
             "ui_language": language or self.ui_language.value(),
+            "ui_theme": theme or self.ui_theme.value(),
             "hotkey": self.hotkey_capture.value(),
             "hotkey_stop": self.stop_capture.value() if hotkey_mode == "pair" else "",
             "hotkey_mode": hotkey_mode,
