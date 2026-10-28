@@ -1,3 +1,5 @@
+[![CI](https://github.com/omertaevalibekai/shepot/actions/workflows/ci.yml/badge.svg)](https://github.com/omertaevalibekai/shepot/actions/workflows/ci.yml)
+
 # Shepot
 
 **English** · [Русский](README.ru.md)
@@ -469,3 +471,20 @@ tests/                 pytest: python -m pytest
 ## License
 
 [MIT](LICENSE)
+
+## Development checks
+
+On Windows with Python 3.11 or later:
+
+```powershell
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+.venv/Scripts/ruff.exe check shepot tests tools
+.venv/Scripts/python.exe -m pytest -q tests
+```
+
+The lint check catches syntax errors and undefined names. Tests use mocked
+services; no paid API key is needed. Configure real API keys through Settings,
+not a committed `.env` file. Tests run with a read-only GitHub token; only the
+tag-triggered release job can publish an artifact. Release notes belong in
+`docs/releases/vX.Y.Z.md`, and the tag must match `shepot.__version__`.
