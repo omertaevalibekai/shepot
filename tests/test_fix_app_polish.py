@@ -25,5 +25,7 @@ def test_anthropic_plain_messages(monkeypatch):
 
 
 def test_timeout_is_bounded():
-    timeout = providers._timeout()
+    import openai
+    timeout = providers._timeout(openai)
     assert timeout.connect == 10.0 and timeout.read == 120.0
+    assert providers._timeout(object()) == 120.0      # у SDK нет Timeout — просто число
