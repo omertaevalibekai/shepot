@@ -41,9 +41,26 @@ def _looks_like(old: str, new: str) -> bool:
     return difflib.SequenceMatcher(None, a, b).ratio() >= 0.55
 
 
-def _is_term(new: str, old: str) -> bool:
+def _sentence_starts(text: str) -> list[bool]:
+    """Для каждого слова из _words(text): стоит ли оно в начале предложения."""
+    flags = []
+    for m in _WORD.finditer(text or ""):
+        raw = text[:m.start()]
+        before = raw.rstrip()
+        # перевод строки среди хвостовых пробелов — тоже начало (rstrip его съедает)
+        flags.append(not before or before[-1] in ".!?…" or "\n" in raw[len(before):])
+    return flags
+
+
+def _case_only(new: str, old: str) -> bool:
+    return new != old and new.lower() == old.lower()
+
+
+def _is_term(new: str, old: str, sentence_start: bool = False) -> bool:
     if new == old:
         return False
+    if sentence_start and _case_only(new, old):
+        return False      # «потом» → «Потом» в начале предложения — не термин, а грамматика
     if re.search(r"[A-Za-z]", new):
         return True                                    # латиница: бренд, термин, имя
     return new[:1].isupper() and not old[:1].isupper()  # стало с заглавной: имя собственное
@@ -62,6 +79,7 @@ def find_correction_pairs(inserted: str, document: str) -> list[tuple[str, str]]
     """
     ins = _words(inserted)
     doc = _words(document)
+    starts = _sentence_starts(inserted)
     if not ins or not doc:
         return []
     matcher = difflib.SequenceMatcher(None, [w.lower() for w in ins], [w.lower() for w in doc],
@@ -75,8 +93,8 @@ def find_correction_pairs(inserted: str, document: str) -> list[tuple[str, str]]
         if tag != "replace":
             if tag == "equal":
                 # «docker» → «Docker»: регистр сравнение выше не видит
-                for a, b in zip(ins[i1:i2], doc[j1:j2]):
-                    if a != b and _is_term(b, a):
+                for k, (a, b) in enumerate(zip(ins[i1:i2], doc[j1:j2])):
+                    if a != b and _is_term(b, a, starts[i1 + k]):
                         learned.append((a, b))
             continue
         old, new = ins[i1:i2], doc[j1:j2]
@@ -93,7 +111,7 @@ def find_correction_pairs(inserted: str, document: str) -> list[tuple[str, str]]
         if len(new) > MAX_PHRASE_WORDS:
             continue
         new_text = " ".join(new)
-        if _looks_like(old_text, new_text) and _is_term(new_text, old_text):
+        if _looks_like(old_text, new_text) and _is_term(new_text, old_text, starts[i1]):
             learned.append((old_text, new_text))
     seen, result = set(), []
     for old, new in learned:

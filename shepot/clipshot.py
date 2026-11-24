@@ -23,14 +23,27 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication
 
+from .selection import DEFAULT_SKIP_APPS, UIA_APPS, foreground_app
+
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 # буфер только что записало чужое приложение — даём ему дописать до конца
 READ_DELAY_MS = 120
 # запасной опрос на случай, если уведомление не дошло
 POLL_MS = 1200
+PENDING_POLL_MS = 250                 # картинка ждёт терминала: ловим переключение быстрее
+
+CF_HDROP = 15
+
+# окна, где работает Claude Code: терминалы и редакторы со встроенным терминалом
+TERMINAL_APPS = frozenset(UIA_APPS) | frozenset(DEFAULT_SKIP_APPS) | {
+    "code - insiders.exe", "pycharm.exe", "idea.exe", "webstorm.exe", "datagrip64.exe",
+    "phpstorm64.exe", "rubymine64.exe", "studio64.exe", "zed.exe", "kitty.exe",
+    "tabby.exe", "hyper.exe", "terminus.exe", "fluentterminal.exe",
+}
 
 _u32 = ctypes.windll.user32
+_u32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
 
 
 def default_dir() -> Path:
@@ -55,6 +68,17 @@ def prune(folder: Path, keep_days: int) -> None:
             pass
 
 
+def _image_file(data) -> Path | None:
+    """Первый скопированный файл-картинка из буфера (Проводник), иначе None."""
+    if not data.hasUrls():
+        return None
+    for url in data.urls():
+        local = url.toLocalFile()
+        if local and Path(local).suffix.lower() in IMAGE_SUFFIXES:
+            return Path(local)
+    return None
+
+
 class Watcher(QObject):
     """Следит за буфером обмена, пока включён.
 
@@ -70,6 +94,7 @@ class Watcher(QObject):
         self.cfg = cfg
         self._enabled = False
         self._seen = _sequence()
+        self._pending: int | None = None    # номер буфера с картинкой, ждущей терминала
 
         self._clipboard = QApplication.clipboard()
 
@@ -112,17 +137,44 @@ class Watcher(QObject):
         self._read_timer.start()
 
     def _poll(self) -> None:
-        if _sequence() != self._seen:
+        seq = _sequence()
+        if seq != self._seen:
             self._check()
+        elif self._pending is not None:
+            if seq != self._pending:
+                self._pending = None          # буфер сменился — забываем
+            elif self._in_terminal():
+                self._check()                 # пользователь дошёл до терминала
+        if self._pending is None:
+            self._poll_timer.setInterval(POLL_MS)
+
+    def _in_terminal(self) -> bool:
+        try:
+            return foreground_app() in TERMINAL_APPS
+        except Exception:
+            return False
 
     def _check(self) -> None:
         if not self._enabled:
             return
-        self._seen = _sequence()
+        seq = self._seen = _sequence()
+        self._pending = None
+        data = self._clipboard.mimeData()
+        if data is None:
+            return
+        # скопированный в Проводнике файл-картинка — отдаём его путь; прочие файлы не трогаем
+        image_file = _image_file(data) if _u32.IsClipboardFormatAvailable(CF_HDROP) else None
+        if image_file is None and (not data.hasImage() or _u32.IsClipboardFormatAvailable(CF_HDROP)):
+            return
+        if not self._in_terminal():
+            self._pending = seq               # подменим, когда фокус придёт в терминал
+            self._poll_timer.setInterval(PENDING_POLL_MS)   # чтобы успеть до Ctrl+V
+            return
         try:
-            path = self._grab()
+            path = image_file or self._grab()
         except Exception:
             # буфер держит другое приложение: запасной опрос вернётся сюда сам
+            self._pending = seq
             return
         if path is None:
             return
@@ -131,27 +183,14 @@ class Watcher(QObject):
         self.captured.emit(text)
 
     def _grab(self) -> Path | None:
-        data = self._clipboard.mimeData()
-        if data is None:
+        image = self._clipboard.image()
+        if image.isNull():
             return None
-
-        if data.hasImage():
-            image = self._clipboard.image()
-            if not image.isNull():
-                folder = self._folder()
-                folder.mkdir(parents=True, exist_ok=True)
-                stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
-                path = folder / f"shot-{stamp}.png"
-                if image.save(str(path), "PNG"):
-                    return path
-                return None
-
-        if data.hasUrls():
-            for url in data.urls():
-                local = url.toLocalFile()
-                if local and Path(local).suffix.lower() in IMAGE_SUFFIXES:
-                    return Path(local)
-        return None
+        folder = self._folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
+        path = folder / f"shot-{stamp}.png"
+        return path if image.save(str(path), "PNG") else None
 
     def _publish(self, path: Path) -> str:
         text = str(path)

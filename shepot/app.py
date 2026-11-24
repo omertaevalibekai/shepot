@@ -88,6 +88,8 @@ class Controller(QObject):
     resultReady = Signal(str, float)
     inserted = Signal(bool)
     failed = Signal(str)
+    polishFailed = Signal(str)
+    insertFailed = Signal(str)
     selectionFound = Signal(str)
     editReady = Signal(str)
     termsLearned = Signal(list)
@@ -122,6 +124,7 @@ class Controller(QObject):
         self._selection_ready = threading.Event()
         self._selection_ready.set()
         self._job_is_edit = False
+        self._polish_warning = ""                  # чистка не удалась: покажем после вставки
         self._target_window = 0
         self._target_is_terminal = False
         self._target_app = ""
@@ -171,6 +174,8 @@ class Controller(QObject):
         self.resultReady.connect(self._deliver)
         self.inserted.connect(self._report_insertion)
         self.failed.connect(self._show_error)
+        self.polishFailed.connect(self._polish_failed)
+        self.insertFailed.connect(self._insert_failed)
         self.selectionFound.connect(self._open_edit_panel)
         self.editReady.connect(self._deliver_edit)
         self.termsLearned.connect(self._remember_terms)
@@ -494,10 +499,19 @@ class Controller(QObject):
         self._check_learning()                        # до новой вставки сверяем прошлую
         if self.edit_panel.isVisible():
             self.edit_panel.cancel()                  # повторное нажатие закрывает панель правки
+            self._notify_keys_stopped()               # запись не началась
             return
         if self._busy or self.recorder.is_recording:
+            if self._busy and not self.recorder.is_recording:
+                self._notify_keys_stopped()
+                msg = t("Ещё обрабатываю предыдущую запись")
+                if self.cfg.get("hud"):
+                    self.hud.show_state("processing", msg)
+                else:
+                    self.tray.showMessage(t(APP_TITLE), msg, QSystemTrayIcon.Information, 1500)
             return
         if providers.missing_key(self.cfg) is not None:
+            self._notify_keys_stopped()
             self._show_error(t("Не указан ключ API — откройте настройки"))
             self._prompt_for_key_if_needed()
             return
@@ -512,6 +526,8 @@ class Controller(QObject):
         )
         if not started:
             self._drop_live()
+            self._notify_keys_stopped()
+            self._show_error(t("Микрофон недоступен: {error}", error=self.recorder.error))
             return
         self.tray.setIcon(make_icon(ACTIVE_COLOR))
         if self.cfg.get("play_sounds"):
@@ -620,15 +636,20 @@ class Controller(QObject):
 
         def deliver() -> None:
             # панель забрала фокус — возвращаем его окну, где осталось выделение
-            if not selection.focus_window(target):
-                inserter.set_clipboard_text(text)
-                self.inserted.emit(False)
+            try:
+                if not selection.focus_window(target):
+                    inserter.set_clipboard_text(text)
+                    self.inserted.emit(False)
+                    return
+            except Exception as exc:                  # буфер занят и т.п.
+                self.insertFailed.emit(str(exc))
                 return
             try:
                 ok = inserter.insert(text, method=method,
                                      restore_clipboard=restore, restore_delay=delay)
-            except Exception:
-                ok = False
+            except Exception as exc:
+                self.insertFailed.emit(str(exc))
+                return
             if ok:
                 self.stats.record(stats.count_words(text), app=self._target_app, edit=True)
             self.inserted.emit(ok)
@@ -703,13 +724,17 @@ class Controller(QObject):
                 hint = context.stt_hint(stt.build_hint(snapshot), window)
                 transcript = stt.transcribe(wav, snapshot, hint=hint)
             transcript = learn.apply(transcript, snapshot.get("replacements") or {})
-            text = polish.polish(transcript, snapshot, context.polish_note(window))
-        except (stt.SttError, polish.PolishError) as exc:
+        except stt.SttError as exc:
             self.failed.emit(str(exc))
             return
         except Exception as exc:                      # не роняем трей из-за сети
             self.failed.emit(t("Непредвиденная ошибка: {error}", error=exc))
             return
+        try:
+            text = polish.polish(transcript, snapshot, context.polish_note(window))
+        except Exception as exc:                      # чистка не удалась — не теряем распознанное
+            text = transcript
+            self.polishFailed.emit(str(exc))
         self.resultReady.emit(text, seconds)
 
     # ------------------------------------------------------------- результат
@@ -718,6 +743,7 @@ class Controller(QObject):
         self.tray.setIcon(make_icon(IDLE_COLOR))
 
         if not text.strip():
+            self._polish_warning = ""
             if self.cfg.get("hud"):
                 self.hud.show_state("done", t("Ничего не распознано"), hide_after=1.6)
             return
@@ -725,6 +751,7 @@ class Controller(QObject):
         reply = self._job_reply
         self.history.add(text, "claude" if reply else self.cfg.get("mode"), seconds)
         if reply is not None:
+            self._polish_warning = ""                 # ответ Claude: предупреждение не копим до следующей диктовки
             self._send_reply(reply, text, seconds)
             return
 
@@ -738,8 +765,9 @@ class Controller(QObject):
             try:
                 ok = inserter.insert(text, method=method,
                                      restore_clipboard=restore, restore_delay=delay)
-            except Exception:
-                ok = False
+            except Exception as exc:
+                self.insertFailed.emit(str(exc))
+                return
             if ok:
                 # запомнить, что и куда вставили: позже сверим с текстом окна
                 self._last_insert = (selection.foreground_window(), text, time.monotonic())
@@ -825,7 +853,24 @@ class Controller(QObject):
                 self.hud.show_state("done", t("Готово, вставьте Ctrl+V"), hide_after=3.0)
             else:
                 message = t("Вставлено") if delivered else t("Скопировано в буфер")
-                self.hud.show_state("done", message, hide_after=1.2)
+                warning, self._polish_warning = self._polish_warning, ""
+                if warning:
+                    self.hud.show_state("error", t("Чистка не удалась, вставлен сырой текст"),
+                                        hide_after=4.0, hint=warning[:80])
+                else:
+                    self.hud.show_state("done", message, hide_after=1.2)
+        self._polish_warning = ""
+
+    def _polish_failed(self, message: str) -> None:
+        self._polish_warning = message or "?"
+        if not self.cfg.get("hud"):
+            self.tray.showMessage(t(APP_TITLE), t("Чистка не удалась, вставлен сырой текст"),
+                                  QSystemTrayIcon.Warning, 4000)
+
+    def _insert_failed(self, error: str) -> None:
+        """Вставка упала с исключением: честно говорим, что текст не вставлен."""
+        self._polish_warning = ""
+        self._show_error(t("Не вставил: {error}. Текст сохранён в истории", error=error))
 
     def _show_error(self, message: str) -> None:
         self._busy = False

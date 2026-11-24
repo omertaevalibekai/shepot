@@ -68,6 +68,8 @@ _k32.WriteConsoleInputW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_InputRecord
                                     ctypes.POINTER(wintypes.DWORD)]
 _k32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
 _k32.CloseHandle.argtypes = [wintypes.HANDLE]
+_k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
 _k32.GetConsoleProcessList.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]
 
 
@@ -92,6 +94,23 @@ def records(text: str, submit: bool = True) -> list[_InputRecord]:
     if submit:
         key("\r", VK_RETURN)
     return result
+
+
+def pid_alive(pid: int) -> bool:
+    """Жив ли процесс pid. Не смогли проверить (нет доступа) — считаем живым."""
+    if not pid:
+        return False
+    _k32.OpenProcess.restype = wintypes.HANDLE
+    handle = _k32.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() != 87             # 87 = нет такого pid
+    try:
+        code = wintypes.DWORD()
+        if not _k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == 259                         # STILL_ACTIVE
+    finally:
+        _k32.CloseHandle(handle)
 
 
 def _has_own_console() -> bool:

@@ -29,8 +29,9 @@ def desk(monkeypatch):
     ))
     monkeypatch.setattr(selection.inserter, "_send", fake_send)
     monkeypatch.setattr(selection.inserter, "get_clipboard_text", lambda: state.board)
-    monkeypatch.setattr(selection.inserter, "set_clipboard_text",
-                        lambda text: setattr(state, "board", text))
+    monkeypatch.setattr(selection.inserter, "get_clipboard_snapshot", lambda: state.board)
+    monkeypatch.setattr(selection.inserter, "restore_clipboard_snapshot",
+                        lambda snap: setattr(state, "board", snap))
     return state
 
 

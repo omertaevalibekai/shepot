@@ -43,12 +43,12 @@ def test_values_are_saved_on_done(dialog):
     dlg.insert_method.set_value("type")
     dlg.window_context.setChecked(True)
     dlg.custom_instruction.setText("  без эмодзи ")
-    dlg.device.setCurrentIndex(dlg.device.findData(3))
+    dlg.device.setCurrentIndex(dlg.device.findData("USB mic"))
     dlg._accept()
     data = saved(path)
     assert data["mode"] == "translate" and data["insert_method"] == "type"
     assert data["window_context"] is True and data["custom_instruction"] == "без эмодзи"
-    assert data["input_device"] == 3 and data["hotkey"] == "ctrl+space"
+    assert data["input_device"] == "USB mic" and data["hotkey"] == "ctrl+space"
 
 
 def test_removed_term_forgets_its_learned_replacement(dialog):

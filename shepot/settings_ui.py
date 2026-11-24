@@ -716,11 +716,16 @@ class SettingsDialog(QDialog):
 
         g = page.group(t("Микрофон"))
         pairs = [(None, t("Устройство по умолчанию"))]
+        devices: list[tuple[int, str]] = []
         try:
-            pairs += [(index, name) for index, name in audio.list_input_devices()]
+            devices = audio.list_input_devices()
+            pairs += [(name, name) for _, name in devices]      # храним имя: индексы меняются
         except Exception:
             pass
-        self.device = _combo(pairs, self.cfg.get("input_device"), 260)
+        saved = self.cfg.get("input_device")
+        if isinstance(saved, int):                               # старый конфиг: индекс → имя
+            saved = next((name for i, name in devices if i == saved), None)
+        self.device = _combo(pairs, saved, 260)
         self._row(page, g, t("Устройство"), self.device)
         self.max_seconds = QSpinBox()
         self.max_seconds.setRange(5, 900)
@@ -920,6 +925,33 @@ class SettingsDialog(QDialog):
             return message
         return hotkeys.try_register(text) or ""
 
+    def _reply_problem(self) -> str:
+        """Проверка клавиши ответа Claude: как у диктовки и прыжка."""
+        if not self.claude_reply.isChecked():
+            return ""
+        text = self.claude_reply_capture.value()
+        if not text:
+            return t("назначьте клавишу")
+        try:
+            binding = hotkeys.parse_binding(text)
+        except ValueError as exc:
+            return t("не получилось разобрать сочетание: {error}", error=exc)
+        taken = [self.hotkey_capture.value()]
+        if self.hotkey_mode.value() == "pair":
+            taken.append(self.stop_capture.value())
+        if self.jump.isChecked():
+            taken.append(self.jump_capture.value())
+        for other in taken:
+            try:
+                if other and hotkeys.parse_binding(other).text == binding.text:
+                    return t("совпадает с другой клавишей Шёпота")
+            except ValueError:
+                pass
+        kind, message = hotkeys.assess(text)
+        if kind == "bad":
+            return message
+        return hotkeys.try_register(text) or ""
+
     def _sync_claude_hooks(self) -> None:
         installed = claude_hooks.is_installed()
         self.claude_connect.setText(t("Отключить") if installed else t("Подключить"))
@@ -962,6 +994,11 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, t("Шёпот"), t("Горячая клавиша: {problem}", problem=problem))
             return False
         hotkey_mode = self.hotkey_mode.value()
+        reply_problem = self._reply_problem()
+        if reply_problem:
+            self._open("claude")
+            QMessageBox.warning(self, t("Шёпот"), t("Клавиша ответа: {problem}", problem=reply_problem))
+            return False
         jump_problem = self._jump_problem()
         if jump_problem:
             self._open("windows")
@@ -996,7 +1033,7 @@ class SettingsDialog(QDialog):
             "llm_provider": self.llm_provider.value(),
             "llm_model": self.llm_model.text().strip() or "gpt-4o-mini",
             "anthropic_model": self.anthropic_model.text().strip() or "claude-opus-5",
-            "input_device": self.device.currentData(),
+            "input_device": self.device.currentData(),       # имя устройства; recorder понимает и старые индексы
             "max_seconds": self.max_seconds.value(),
             "insert_method": self.insert_method.value(),
             "restore_clipboard": self.restore_clipboard.isChecked(),

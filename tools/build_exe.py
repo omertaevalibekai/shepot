@@ -28,6 +28,7 @@ ARGS = [
     "--hidden-import", "win32clipboard",
     "--hidden-import", "win32crypt",
     "--hidden-import", "win32timezone",
+    "--hidden-import", "anthropic",     # импортируется лениво внутри функции
     "run.pyw",
 ]
 

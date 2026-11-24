@@ -44,7 +44,7 @@ DEFAULTS: dict = {
     "llm_model": "gpt-4o-mini",
     "anthropic_model": "claude-opus-5",
     # --- запись ---
-    "input_device": None,          # индекс устройства PyAudio, None = по умолчанию
+    "input_device": None,          # имя микрофона (старые версии: индекс PyAudio), None = по умолчанию
     "max_seconds": 120,
     "min_seconds": 0.35,
     # --- вставка ---

@@ -69,7 +69,8 @@ def test_paste_insert_restores_clipboard(monkeypatch, sent):
     _held(monkeypatch)
     board = {"text": "было"}
     restored = []
-    monkeypatch.setattr(inserter, "get_clipboard_text", lambda: board["text"])
+    monkeypatch.setattr(inserter, "_blocked_by_uipi", lambda: False)
+    monkeypatch.setattr(inserter, "get_clipboard_snapshot", lambda: board["text"])
     monkeypatch.setattr(inserter, "set_clipboard_text", lambda t: board.update(text=t))
     monkeypatch.setattr(inserter, "_restore_clipboard_later", lambda prev, _d: restored.append(prev))
 
@@ -80,7 +81,7 @@ def test_paste_insert_restores_clipboard(monkeypatch, sent):
 
 
 def test_clipboard_method_sends_no_keys(monkeypatch, sent):
-    monkeypatch.setattr(inserter, "get_clipboard_text", lambda: None)
+    monkeypatch.setattr(inserter, "get_clipboard_snapshot", lambda: None)
     monkeypatch.setattr(inserter, "set_clipboard_text", lambda _t: None)
     assert inserter.insert("текст", method="clipboard") is False
     assert sent == []
@@ -88,11 +89,54 @@ def test_clipboard_method_sends_no_keys(monkeypatch, sent):
 
 def test_type_method_sends_unicode_and_enter(monkeypatch, sent):
     _held(monkeypatch)
+    monkeypatch.setattr(inserter, "_blocked_by_uipi", lambda: False)
     assert inserter.insert("я\nb", method="type") is True
     flat = [event for batch in sent for event in batch]
     unicode_units = [scan for vk, scan, flags in flat if flags & inserter.KEYEVENTF_UNICODE]
     assert unicode_units == [ord("я"), ord("я"), ord("b"), ord("b")]
     assert [vk for vk, _s, _f in flat if vk == inserter.VK_RETURN] == [0x0D, 0x0D]
+    # перевод строки — Shift+Enter, а не голый Enter
+    assert [vk for vk, _s, _f in flat if vk in (0x10, 0x0D)] == [0x10, 0x0D, 0x0D, 0x10]
+
+
+def test_elevated_window_keeps_text_in_clipboard(monkeypatch, sent):
+    board = {"text": "было"}
+    restored = []
+    monkeypatch.setattr(inserter, "_blocked_by_uipi", lambda: True)
+    monkeypatch.setattr(inserter, "get_clipboard_snapshot", lambda: board["text"])
+    monkeypatch.setattr(inserter, "set_clipboard_text", lambda t: board.update(text=t))
+    monkeypatch.setattr(inserter, "_restore_clipboard_later", lambda prev, _d: restored.append(prev))
+    assert inserter.insert("привет", method="paste") is False
+    assert board["text"] == "привет" and restored == [] and sent == []
+
+
+def test_failed_send_keeps_text_in_clipboard(monkeypatch):
+    _held(monkeypatch)
+    board = {"text": "было"}
+    restored = []
+
+    def boom(_events):
+        raise OSError("SendInput")
+
+    monkeypatch.setattr(inserter, "_send", boom)
+    monkeypatch.setattr(inserter.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(inserter, "_blocked_by_uipi", lambda: False)
+    monkeypatch.setattr(inserter, "get_clipboard_snapshot", lambda: board["text"])
+    monkeypatch.setattr(inserter, "set_clipboard_text", lambda t: board.update(text=t))
+    monkeypatch.setattr(inserter, "_restore_clipboard_later", lambda prev, _d: restored.append(prev))
+    assert inserter.insert("привет", method="paste") is False
+    assert board["text"] == "привет" and restored == []
+
+
+def test_send_raises_when_not_all_events_sent(monkeypatch):
+    monkeypatch.setattr(inserter, "_u32", SimpleNamespace(SendInput=lambda *_a: 0))
+    with pytest.raises(OSError):
+        inserter._send([inserter._unicode_event(65, False)])
+
+
+def test_non_copyable_formats_skipped():
+    assert not inserter._is_copyable(2) and not inserter._is_copyable(14)
+    assert inserter._is_copyable(8) and inserter._is_copyable(15)
 
 
 def test_empty_text_does_nothing(sent):

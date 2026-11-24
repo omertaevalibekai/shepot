@@ -30,6 +30,10 @@ WIDTH, HEIGHT = int(MAX_W) + PAD * 2, int(MAX_H) + PAD * 2
 ROW_H = 46.0
 DONE_S = 2.8
 LIFT_OVER_HUD = 56                 # карточка поверх острова диктовки, если тот на экране
+IDLE_MS = 200                      # опрос скрытого острова
+SPIN_EVERY = 3                     # спиннер: каждый 3-й кадр (~20 кадров/с)
+SECOND_FRAMES = 30                 # статичный остров: перерисовка раз в ~0,5 с
+SETTLE_PX, SETTLE_V = 0.5, 2.0     # пружина «доехала»: дальше кадры не нужны
 
 CARD_STYLE = """
 QLabel#head { color: #ffffff; }
@@ -53,13 +57,22 @@ def _fmt(seconds: float) -> str:
 
 
 class ClaudeIsland(QWidget):
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        self._enabled = bool(value)
+        self.bridge.ask_permissions = self._enabled     # выключен — терминал спрашивает сам
+
     def __init__(self, bridge: Bridge, dictation_hud: hud.Hud) -> None:
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.resize(WIDTH, HEIGHT)
         self.bridge, self.hud = bridge, dictation_hud
-        self.enabled = True
+        self.enabled = True                # через свойство: заодно говорит мосту, спрашивать ли разрешения
 
         self._font = QFont("Segoe UI"); self._font.setPointSizeF(10); self._font.setWeight(QFont.Medium)
         self._small = QFont("Segoe UI"); self._small.setPointSizeF(9)
@@ -87,6 +100,7 @@ class ClaudeIsland(QWidget):
         self._timer.setInterval(hud.FRAME_MS)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
+        self._frame = 0                     # счётчик кадров: спиннер рисуем реже, чем считаем пружину
 
     # ---------------------------------------------------------- карточка
     def _build_card(self) -> None:
@@ -174,6 +188,7 @@ class ClaudeIsland(QWidget):
 
     def _go(self, view: str) -> None:
         self.view = view
+        self._timer.setInterval(hud.FRAME_MS)      # проснуться к анимации, если спали
         if view == "perm":
             self._fade.setOpacity(0.0)
             top = PAD if self._down else PAD + MAX_H - self._target()[1]
@@ -217,7 +232,10 @@ class ClaudeIsland(QWidget):
             self.hide()
             return
         if not self.isVisible():
+            # Скрытому острову кадры не нужны: опрос раз в IDLE_MS, _go будит сразу.
+            self._timer.setInterval(IDLE_MS)
             return
+        self._timer.setInterval(hud.FRAME_MS)
         dt = hud.FRAME_MS / 1000.0
         self.drag.tick(dt)
         if self.view == "perm" and not self.drag.busy:
@@ -231,7 +249,23 @@ class ClaudeIsland(QWidget):
         if self.view == "perm":
             grown = (self._h - hud.CAPSULE_H) / max(1.0, th - hud.CAPSULE_H)
             self._fade.setOpacity(max(0.0, min(1.0, (grown - 0.6) / 0.4)))
-        self.update()
+        self._frame += 1
+        moving = (abs(tw - self._w) > SETTLE_PX or abs(th - self._h) > SETTLE_PX
+                  or abs(self._vw) > SETTLE_V or abs(self._vh) > SETTLE_V or self.drag.busy)
+        if moving or self.view == "done":
+            self.update()
+        elif self._spinning() and self._frame % SPIN_EVERY == 0:
+            self.update()                   # спиннер и секундомер: ~20 кадров/с хватает глазу
+        elif self._frame % SECOND_FRAMES == 0:
+            self.update()                   # редкий кадр: обновить текст статуса
+
+    def _spinning(self) -> bool:
+        if self.view not in ("compact", "list"):
+            return False
+        # snapshot() берёт lock моста — спрашиваем раз в ~0,5 с, а не каждый кадр
+        if self._frame % SECOND_FRAMES == 0 or not hasattr(self, "_think"):
+            self._think = any(s.state == "think" for s in self.bridge.snapshot())
+        return self._think
 
     def _place(self, anchor: QPoint, lift: bool) -> None:
         """anchor — середина нижнего края капсулы диктовки; lift — уступить ей место."""

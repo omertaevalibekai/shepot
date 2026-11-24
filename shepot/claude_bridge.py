@@ -30,6 +30,8 @@ PORT = 47821
 TOKEN_FILE = CONFIG_DIR / "claude_token"
 DECISION_WAIT_S = 60.0         # дольше не держим: иначе терминал ждёт хук вместо обычного вопроса
 REPLY_FRESH_S = 30 * 60        # отвечать голосом можно сессии, которая отзывалась не позже этого
+STUCK_S = 600                  # think/wait без событий дольше этого — Stop не пришёл (Esc, закрытое окно)
+REAP_S = 5.0                     # как часто проверять, живы ли процессы сессий
 
 
 def token() -> str:
@@ -108,6 +110,8 @@ class Bridge(QObject):
         self.pending: list[Permission] = []
         self._server: ThreadingHTTPServer | None = None
         self.error = ""
+        self.ask_permissions = True           # False: остров выключен, терминал спрашивает сам
+        self._reaped = float("-inf")
 
     # ---------------------------------------------------------------- сервер
     def start(self, port: int = PORT) -> bool:
@@ -214,6 +218,8 @@ class Bridge(QObject):
         s.state, s.action = state, action
 
     def _ask_permission(self, s: Session, p: dict) -> dict:
+        if not self.ask_permissions:
+            return {}                                # остров не покажет карточку: не держим терминал
         tool = p.get("tool_name", "")
         request = Permission(s.id, s.name, tool, describe(tool, p.get("tool_input")),
                              p.get("permission_suggestions") or [])
@@ -256,9 +262,10 @@ class Bridge(QObject):
 
         Ждущая ответа важнее закончившей; среди равных — та, что отозвалась последней.
         Думающей сессии тоже можно ответить: Claude Code поставит сообщение в очередь.
+        Сессии в «wait» не отвечаем: Enter в открытом меню разрешения подтвердил бы команду.
         """
         now = time.monotonic()
-        rank = {"ask": 0, "done": 1, "wait": 2, "think": 3}
+        rank = {"ask": 0, "done": 1, "think": 2}
         with self._lock:
             alive = [s for s in self.sessions.values()
                      if s.pid and s.state in rank and now - s.updated <= REPLY_FRESH_S]
@@ -275,8 +282,14 @@ class Bridge(QObject):
     def snapshot(self) -> list[Session]:
         with self._lock:
             now = time.monotonic()
+            waiting = {r.session_id for r in self.pending}
+            if now - self._reaped > REAP_S:          # OpenProcess на каждую сессию — не чаще раза в REAP_S
+                self._reaped = now
+                for sid in [k for k, s in self.sessions.items() if s.pid and not claude_reply.pid_alive(s.pid)]:
+                    del self.sessions[sid]           # окно закрыто, SessionEnd не пришёл
             for s in self.sessions.values():
-                if s.state == "done" and now - s.updated > 600:
+                idle = now - s.updated
+                if (s.state == "done" and idle > 600)                         or (s.state == "think" and idle > STUCK_S)                         or (s.state == "wait" and s.id not in waiting and idle > STUCK_S):
                     s.state, s.action = "idle", ""
             return sorted(self.sessions.values(), key=lambda x: x.started)
 

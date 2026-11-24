@@ -113,15 +113,11 @@ def _anthropic(cfg, system: str, text: str) -> str:
     except ProviderError as exc:
         raise PolishError(str(exc)) from exc
     try:
-        response = client.beta.messages.create(
+        response = client.messages.create(
             model=cfg.get("anthropic_model"),
             max_tokens=4096,
             system=system,
             messages=[{"role": "user", "content": text}],
-            # диктовка чувствительна к задержке — держим минимальное усилие
-            output_config={"effort": "low"},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
         )
     except Exception as exc:
         raise PolishError(t("Ошибка обработки текста: {error}", error=exc)) from exc

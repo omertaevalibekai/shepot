@@ -18,18 +18,46 @@ CHUNK = 1024              # ~64 мс — достаточно частые об�
 FORMAT = pyaudio.paInt16
 
 
+def _input_devices(pa) -> list[tuple[int, str]]:
+    """Микрофоны одного host API (по умолчанию у PortAudio, в Windows это MME), без дублей по имени."""
+    try:
+        api = int(pa.get_default_host_api_info().get("index", -1))
+    except Exception:
+        api = -1
+    devices: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for i in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(i)
+        if int(info.get("maxInputChannels", 0)) <= 0:
+            continue
+        if api >= 0 and int(info.get("hostApi", api)) != api:
+            continue
+        name = str(info.get("name", t("Устройство {n}", n=i)))
+        if name in seen:
+            continue
+        seen.add(name)
+        devices.append((i, name))
+    return devices
+
+
 def list_input_devices() -> list[tuple[int, str]]:
     """Список доступных микрофонов: [(индекс, название), ...]."""
     pa = pyaudio.PyAudio()
-    devices = []
     try:
-        for i in range(pa.get_device_count()):
-            info = pa.get_device_info_by_index(i)
-            if int(info.get("maxInputChannels", 0)) > 0:
-                devices.append((i, str(info.get("name", t("Устройство {n}", n=i)))))
+        return _input_devices(pa)
     finally:
         pa.terminate()
-    return devices
+
+
+def resolve_device(devices: list[tuple[int, str]], spec) -> int | None:
+    """Имя (или старый индекс) → индекс в текущем списке; не нашли — None, то есть микрофон по умолчанию."""
+    if spec is None or spec == "":
+        return None
+    if isinstance(spec, str):
+        return next((i for i, name in devices if name == spec), None)
+    if isinstance(spec, int) and not isinstance(spec, bool):
+        return spec if any(i == spec for i, _ in devices) else None
+    return None
 
 
 def encode_wav(frames: list[bytes]) -> bytes:
@@ -75,21 +103,62 @@ class Recorder:
         return samples / RATE
 
     # -------------------------------------------------------------- команды
-    def start(self, device_index: int | None = None, max_seconds: float = 120.0) -> bool:
+    def start(self, device_index: int | str | None = None, max_seconds: float = 120.0) -> bool:
+        """Открывает микрофон сразу: False — не открылся (причина в .error).
+
+        device_index — имя устройства (или старый индекс); не найдено → микрофон по умолчанию.
+        """
         with self._lock:
             if self._recording:
                 return False
             self._recording = True
             self._frames = []
             self._error = None
+        try:
+            # PyAudio не видит подключённые позже устройства. Пересоздавать его на каждое
+            # нажатие дорого (сотни мс), поэтому только когда нужного микрофона нет в списке
+            # или он не открылся.
+            missing = isinstance(device_index, str) and device_index not in {
+                name for _i, name in _input_devices(self._pa)}
+            if missing:
+                self._refresh_pa()
+            try:
+                stream = self._open(device_index)
+            except Exception:
+                if missing or not self._refresh_pa():
+                    raise
+                stream = self._open(device_index)
+        except Exception as exc:  # микрофона нет, занят, отключён
+            self._error = str(exc) or t("устройство не открылось")
+            with self._lock:
+                self._recording = False
+            return False
         self._stop_evt.clear()
         self._thread = threading.Thread(
             target=self._run,
-            args=(device_index, max_seconds),
+            args=(stream, max_seconds),
             daemon=True,
             name="shepot-recorder",
         )
         self._thread.start()
+        return True
+
+    def _open(self, device_index):
+        index = resolve_device(_input_devices(self._pa), device_index)
+        return self._pa.open(
+            format=FORMAT, channels=CHANNELS, rate=RATE, input=True,
+            input_device_index=index, frames_per_buffer=CHUNK,
+        )
+
+    def _refresh_pa(self) -> bool:
+        """Пересоздаёт PyAudio, чтобы увидеть новые устройства. False — нельзя сейчас."""
+        if any(th.name == "shepot-recorder" and th.is_alive() for th in threading.enumerate()):
+            return False                  # прошлый поток ещё читает старый stream
+        try:
+            self._pa.terminate()
+        except Exception:
+            pass
+        self._pa = pyaudio.PyAudio()
         return True
 
     def stop(self) -> bytes | None:
@@ -126,17 +195,8 @@ class Recorder:
             pass
 
     # ----------------------------------------------------------------- поток
-    def _run(self, device_index: int | None, max_seconds: float) -> None:
-        stream = None
+    def _run(self, stream, max_seconds: float) -> None:
         try:
-            stream = self._pa.open(
-                format=FORMAT,
-                channels=CHANNELS,
-                rate=RATE,
-                input=True,
-                input_device_index=device_index,
-                frames_per_buffer=CHUNK,
-            )
             max_chunks = int(max_seconds * RATE / CHUNK)
             read = 0
             while not self._stop_evt.is_set():

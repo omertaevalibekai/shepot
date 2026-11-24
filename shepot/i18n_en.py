@@ -48,6 +48,9 @@ EN: dict[str, str] = {
     "Не удалось назначить горячую клавишу: {error}": "Couldn't set the hotkey: {error}",
     "Не удалось назначить клавишу прыжка: {error}": "Couldn't set the jump key: {error}",
     "Не удалось назначить клавишу ответа Claude: {error}": "Couldn't set the Claude reply key: {error}",
+    "Ещё обрабатываю предыдущую запись": "Still processing the previous recording",
+    "Чистка не удалась, вставлен сырой текст": "Cleanup failed, raw text inserted",
+    "Не вставил: {error}. Текст сохранён в истории": "Couldn't insert: {error}. The text is saved in history",
     "Не переписал: {error}": "Couldn't rewrite: {error}",
     "Не отправил в {session}: {error}. Текст в буфере": "Couldn't send to {session}: {error}. The text is on the clipboard",
     "Заменено": "Replaced",
@@ -438,4 +441,8 @@ EN: dict[str, str] = {
     "Сегодня": "Today",
     "максимум {n}": "max {n}",
     "Появится после первых диктовок": "Shows up after your first dictations",
+    "Клавиша ответа: {problem}": "Reply key: {problem}",
+    "назначьте клавишу": "assign a key",
+    "совпадает с другой клавишей Шёпота": "same as another Shepot key",
+    "устройство не открылось": "the device did not open",
 }

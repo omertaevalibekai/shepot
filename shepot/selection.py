@@ -150,7 +150,7 @@ def grab(skip_apps=DEFAULT_SKIP_APPS, wait_keys: float = 0.6, wait_copy: float =
         # Ctrl+C превратился бы в другое сочетание — не рискуем
         return None
 
-    previous = inserter.get_clipboard_text()
+    previous = inserter.get_clipboard_snapshot()      # все форматы, не только текст
     before = _u32.GetClipboardSequenceNumber()
 
     if VK_CONTROL in held:
@@ -164,7 +164,10 @@ def grab(skip_apps=DEFAULT_SKIP_APPS, wait_keys: float = 0.6, wait_copy: float =
                   inserter._vk_event(VK_C, True), inserter._vk_event(VK_CONTROL, True)]
     if before_send is not None:
         before_send()                       # предупредить горячие клавиши, что нажатия наши
-    inserter._send(events)
+    try:
+        inserter._send(events)
+    except OSError:
+        return None                         # нажатия не дошли (окно администратора)
 
     deadline = time.monotonic() + wait_copy
     while _u32.GetClipboardSequenceNumber() == before:
@@ -176,7 +179,7 @@ def grab(skip_apps=DEFAULT_SKIP_APPS, wait_keys: float = 0.6, wait_copy: float =
 
     if previous is not None:
         try:
-            inserter.set_clipboard_text(previous)
+            inserter.restore_clipboard_snapshot(previous)
         except Exception:
             pass
     if not text or not text.strip():

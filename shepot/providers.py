@@ -31,6 +31,13 @@ _anthropic_key = ""
 _lock = threading.RLock()
 
 
+def _timeout():
+    """Подключение — 10 с, ответ — 120 с (длинные WAV): зависшая сеть не держит диктовку минутами."""
+    import httpx
+
+    return httpx.Timeout(120.0, connect=10.0)
+
+
 def openai_client():
     """Клиент OpenAI. Пересоздаётся, если пользователь сменил ключ."""
     global _openai, _openai_key
@@ -41,7 +48,7 @@ def openai_client():
         if _openai is None or key != _openai_key:
             from openai import OpenAI
 
-            _openai = OpenAI(api_key=key, max_retries=1)
+            _openai = OpenAI(api_key=key, max_retries=1, timeout=_timeout())
             _openai_key = key
         return _openai
 
@@ -59,7 +66,7 @@ def anthropic_client():
                 raise ProviderError(
                     t("Не установлен пакет anthropic. Выполните: pip install anthropic")
                 ) from exc
-            _anthropic = anthropic.Anthropic(api_key=key, max_retries=1)
+            _anthropic = anthropic.Anthropic(api_key=key, max_retries=1, timeout=_timeout())
             _anthropic_key = key
         return _anthropic
 
