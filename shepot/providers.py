@@ -110,7 +110,7 @@ def check_openai(key: str) -> tuple[bool, str]:
 
         models = {m.id for m in OpenAI(api_key=key, max_retries=0).models.list()}
     except Exception as exc:
-        return False, _humanize(exc)
+        return False, humanize(exc)
     missing = [m for m in ("gpt-4o-transcribe", "gpt-4o-mini") if m not in models]
     if missing:
         return True, t("Ключ рабочий, но этому проекту недоступны модели: {models}", models=", ".join(missing))
@@ -129,13 +129,42 @@ def check_anthropic(key: str) -> tuple[bool, str]:
     try:
         anthropic.Anthropic(api_key=key, max_retries=0).models.list()
     except Exception as exc:
-        return False, _humanize(exc)
+        return False, humanize(exc)
     return True, t("Ключ рабочий.")
 
 
-def _humanize(exc: Exception) -> str:
+def humanize(exc: Exception) -> str:
+    """Короткое понятное сообщение вместо ответа SDK с JSON внутри.
+
+    Исходная ошибка целиком уходит в журнал (errlog) там, где её поймали.
+    """
     text = str(exc)
     lowered = text.lower()
+    name = type(exc).__name__
+    status = getattr(exc, "status_code", None)
+    if "Timeout" in name:
+        return t("Сервер не ответил вовремя — проверьте интернет и попробуйте ещё раз.")
+    if "Connection" in name:
+        return t("Нет связи с сервером — проверьте интернет.")
+    if isinstance(status, int):
+        if status == 401:
+            return t("Ключ не принят — проверьте, что скопировали его целиком.")
+        if status == 403:
+            return t("Доступ запрещён: у ключа нет прав на эту модель или регион не поддерживается.")
+        if status == 404:
+            return t("Модель не найдена — проверьте её название в настройках.")
+        if status == 429:
+            if "insufficient_quota" in lowered or "quota" in lowered or "billing" in lowered:
+                return t("Баланс API исчерпан — пополните счёт у провайдера.")
+            return t("Слишком много запросов — подождите немного и повторите.")
+        if status >= 500:
+            return t("Сервер временно недоступен (код {code}) — попробуйте ещё раз.", code=status)
+        body = getattr(exc, "body", None)
+        reason = ""
+        if isinstance(body, dict):
+            error = body.get("error", body)
+            reason = str(error.get("message", "")) if isinstance(error, dict) else str(error)
+        return t("Запрос отклонён (код {code}): {reason}", code=status, reason=(reason or text)[:160])
     if "401" in text or "invalid_api_key" in lowered or "authentication" in lowered:
         return t("Ключ не принят — проверьте, что скопировали его целиком.")
     if "429" in text or "quota" in lowered:

@@ -5,7 +5,9 @@ from __future__ import annotations
 import io
 import threading
 
-from .providers import ProviderError, openai_client
+from . import errlog
+from .i18n import t
+from .providers import ProviderError, humanize, openai_client
 
 
 class SttError(RuntimeError):
@@ -29,7 +31,8 @@ def _transcribe_openai(wav: bytes, model: str, language: str | None, hint: str) 
     try:
         result = client.audio.transcriptions.create(**kwargs)
     except Exception as exc:
-        raise SttError(f"Ошибка распознавания: {exc}") from exc
+        errlog.exception("stt", exc)
+        raise SttError(t("Ошибка распознавания: {error}", error=humanize(exc))) from exc
     # при response_format="text" SDK отдаёт строку
     return result if isinstance(result, str) else getattr(result, "text", "")
 

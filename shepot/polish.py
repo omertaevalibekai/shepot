@@ -6,7 +6,8 @@ import re
 
 from .i18n import t
 
-from .providers import ProviderError, anthropic_client, openai_client
+from .providers import humanize, ProviderError, anthropic_client, openai_client
+from . import errlog
 
 LANGUAGE_NAMES = {
     "en": "English",
@@ -101,7 +102,8 @@ def _openai(cfg, system: str, text: str) -> str:
             ],
         )
     except Exception as exc:
-        raise PolishError(t("Ошибка обработки текста: {error}", error=exc)) from exc
+        errlog.exception("polish", exc)
+        raise PolishError(t("Ошибка обработки текста: {error}", error=humanize(exc))) from exc
     return response.choices[0].message.content or ""
 
 
@@ -120,7 +122,8 @@ def _anthropic(cfg, system: str, text: str) -> str:
             messages=[{"role": "user", "content": text}],
         )
     except Exception as exc:
-        raise PolishError(t("Ошибка обработки текста: {error}", error=exc)) from exc
+        errlog.exception("polish", exc)
+        raise PolishError(t("Ошибка обработки текста: {error}", error=humanize(exc))) from exc
 
     if getattr(response, "stop_reason", None) == "refusal":
         raise PolishError(t("Модель отклонила обработку этого фрагмента."))

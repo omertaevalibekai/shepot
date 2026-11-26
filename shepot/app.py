@@ -13,8 +13,10 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
+import os
+
 from . import (
-    audio, clipshot, ghost, hotkeys, inserter, island_place, jump, learn, polish, providers,
+    audio, clipshot, errlog, ghost, hotkeys, inserter, island_place, jump, learn, polish, providers,
     claude_reply, context, live, logo, selection, stats, stt, updates,
 )
 from .config import Config
@@ -40,6 +42,25 @@ LEARN_WINDOW_S = 600
 IDLE_COLOR = QColor(76, 155, 255)       # курсор знака: ждёт
 ACTIVE_COLOR = QColor(255, 159, 10)     # пишет — оранжевый, как лампа острова
 BUSY_COLOR = QColor(255, 214, 10)       # обрабатывает
+
+# Сколько ждать сервер, прежде чем сдаться: SDK сам ждёт до 120 с на запрос и
+# повторяет его, то есть зависшая сеть держала бы Шёпот минутами. Длинной записи
+# распознавание честно нужно дольше, поэтому запас растёт с её длиной.
+PROCESS_BASE_S = 30.0
+PROCESS_PER_AUDIO_S = 0.5
+
+
+def process_deadline(seconds: float) -> float:
+    return PROCESS_BASE_S + PROCESS_PER_AUDIO_S * max(0.0, seconds)
+
+
+class _Job:
+    """Одна диктовка в обработке. Брошенная (Esc, дедлайн) — её поздний результат не вставляется."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.transcript: str | None = None        # распознано; чистка ещё может идти
+        self.abandoned = False
 
 
 def make_icon(color: QColor) -> QIcon:
@@ -86,6 +107,9 @@ class Controller(QObject):
     requestCancel = Signal()
     levelChanged = Signal(float)
     resultReady = Signal(str, float)
+    jobDone = Signal(object, str)             # _Job, готовый текст
+    jobFailed = Signal(object, str)           # _Job, сообщение
+    jobPolishFailed = Signal(object, str)     # _Job, сообщение
     inserted = Signal(bool)
     failed = Signal(str)
     polishFailed = Signal(str)
@@ -119,6 +143,7 @@ class Controller(QObject):
             on_cancel=self.requestCancel.emit,
         )
         self._busy = False
+        self._job: _Job | None = None              # диктовка, которую сейчас обрабатываем
         # голосовая правка: выделение забирается в фоне, пока человек говорит
         self._selection: str | None = None
         self._selection_ready = threading.Event()
@@ -169,9 +194,12 @@ class Controller(QObject):
 
         self.requestStart.connect(self.start_dictation)
         self.requestFinish.connect(self.finish_dictation)
-        self.requestCancel.connect(self.cancel_dictation)
+        self.requestCancel.connect(self._cancel_pressed)
         self.levelChanged.connect(self.hud.set_level)
         self.resultReady.connect(self._deliver)
+        self.jobDone.connect(self._job_done)
+        self.jobFailed.connect(self._job_failed)
+        self.jobPolishFailed.connect(self._job_polish_failed)
         self.inserted.connect(self._report_insertion)
         self.failed.connect(self._show_error)
         self.polishFailed.connect(self._polish_failed)
@@ -277,6 +305,10 @@ class Controller(QObject):
         history_action = QAction(t("История…"), menu)
         history_action.triggered.connect(self.open_history)
         menu.addAction(history_action)
+
+        log_action = QAction(t("Журнал ошибок…"), menu)
+        log_action.triggered.connect(self.open_error_log)
+        menu.addAction(log_action)
 
         settings_action = QAction(t("Настройки…"), menu)
         settings_action.triggered.connect(lambda: self.open_settings())
@@ -598,7 +630,8 @@ class Controller(QObject):
             self.recorder.cancel()
             self._notify_keys_stopped()
         self._drop_live()
-        self._busy = False                            # короткое удержание уже ушло в _process — он отступит
+        self._job = None                              # короткое удержание уже ушло в _process — он отступит
+        self._busy = False
         self.tray.setIcon(make_icon(IDLE_COLOR))
         anchor = self.hud.capsule_anchor()
         width = self.hud.hand_over()
@@ -691,8 +724,10 @@ class Controller(QObject):
         self._busy = True
         if self.cfg.get("hud"):
             self.hud.show_state("processing")
+        job = self._job = _Job(seconds)
+        QTimer.singleShot(int(process_deadline(seconds) * 1000), lambda: self._job_timeout(job))
         threading.Thread(
-            target=self._process, args=(wav, seconds, live_job, self._ctx), daemon=True,
+            target=self._process, args=(wav, seconds, live_job, self._ctx, job), daemon=True,
             name="shepot-pipeline",
         ).start()
 
@@ -706,7 +741,67 @@ class Controller(QObject):
         self.tray.setIcon(make_icon(IDLE_COLOR))
         self.hud.hide_now()
 
-    def _process(self, wav: bytes, seconds: float, live_job, ctx) -> None:
+    def _cancel_pressed(self) -> None:
+        """Esc: во время записи — отмена записи; во время обработки — бросить ожидание сервера."""
+        if self.recorder.is_recording:
+            self.cancel_dictation()
+            return
+        job = self._job
+        if job is None or not self._busy:
+            return
+        self._abandon(job)
+        errlog.record("cancel", f"processing cancelled by user after stage={'polish' if job.transcript else 'stt'}")
+        if self.cfg.get("hud"):
+            self.hud.show_state("done", t("Отменено"), hide_after=1.2)
+
+    def _abandon(self, job: _Job) -> None:
+        job.abandoned = True
+        if self._job is job:
+            self._job = None
+            self._busy = False
+            self._polish_warning = ""
+            self._job_reply = None
+            self.tray.setIcon(make_icon(IDLE_COLOR))
+
+    def _job_timeout(self, job: _Job) -> None:
+        """Сервер молчит дольше дедлайна: распознанное вставляем без чистки, иначе честно сдаёмся."""
+        if job is not self._job or job.abandoned:
+            return
+        limit = round(process_deadline(job.seconds))
+        transcript = job.transcript
+        if transcript is not None and transcript.strip():
+            errlog.record("timeout", f"polish gave no answer in {limit} s; raw transcript inserted")
+            job.abandoned = True
+            self._job = None
+            self._polish_warning = t("нет ответа за {seconds} с", seconds=limit)
+            self._deliver(transcript, job.seconds)
+            return
+        errlog.record("timeout", f"speech recognition gave no answer in {limit} s")
+        self._abandon(job)
+        self._show_error(t("Сервер не ответил за {seconds} с — попробуйте ещё раз", seconds=limit))
+
+    def _job_done(self, job: _Job, text: str) -> None:
+        if job.abandoned or job is not self._job:
+            if text.strip():                          # поздний ответ: не вставляем, но и не теряем
+                self.history.add(text, self.cfg.get("mode"), job.seconds)
+            return
+        self._job = None
+        self._deliver(text, job.seconds)
+
+    def _job_failed(self, job: _Job, message: str) -> None:
+        if job.abandoned or job is not self._job:
+            return
+        self._job = None
+        self._show_error(message)
+
+    def _job_polish_failed(self, job: _Job, message: str) -> None:
+        if job.abandoned or job is not self._job:
+            return
+        self._polish_failed(message)
+
+    def _process(self, wav: bytes, seconds: float, live_job, ctx, job: _Job | None = None) -> None:
+        if job is None:
+            job = self._job = _Job(seconds)
         snapshot = _Snapshot(self.cfg.as_dict())
         self._selection_ready.wait(1.0)               # очень короткая запись: выделение ещё в пути
         if self._selection:
@@ -725,17 +820,19 @@ class Controller(QObject):
                 transcript = stt.transcribe(wav, snapshot, hint=hint)
             transcript = learn.apply(transcript, snapshot.get("replacements") or {})
         except stt.SttError as exc:
-            self.failed.emit(str(exc))
+            self.jobFailed.emit(job, str(exc))
             return
         except Exception as exc:                      # не роняем трей из-за сети
-            self.failed.emit(t("Непредвиденная ошибка: {error}", error=exc))
+            errlog.exception("pipeline", exc)
+            self.jobFailed.emit(job, t("Непредвиденная ошибка: {error}", error=exc))
             return
+        job.transcript = transcript                   # дедлайн во время чистки вставит хотя бы это
         try:
             text = polish.polish(transcript, snapshot, context.polish_note(window))
         except Exception as exc:                      # чистка не удалась — не теряем распознанное
             text = transcript
-            self.polishFailed.emit(str(exc))
-        self.resultReady.emit(text, seconds)
+            self.jobPolishFailed.emit(job, str(exc))
+        self.jobDone.emit(job, text)
 
     # ------------------------------------------------------------- результат
     def _deliver(self, text: str, seconds: float) -> None:
@@ -766,6 +863,7 @@ class Controller(QObject):
                 ok = inserter.insert(text, method=method,
                                      restore_clipboard=restore, restore_delay=delay)
             except Exception as exc:
+                errlog.exception("insert", exc)
                 self.insertFailed.emit(str(exc))
                 return
             if ok:
@@ -862,6 +960,7 @@ class Controller(QObject):
         self._polish_warning = ""
 
     def _polish_failed(self, message: str) -> None:
+        errlog.record("polish-fallback", message)
         self._polish_warning = message or "?"
         if not self.cfg.get("hud"):
             self.tray.showMessage(t(APP_TITLE), t("Чистка не удалась, вставлен сырой текст"),
@@ -873,6 +972,7 @@ class Controller(QObject):
         self._show_error(t("Не вставил: {error}. Текст сохранён в истории", error=error))
 
     def _show_error(self, message: str) -> None:
+        errlog.record("shown", message)
         self._busy = False
         self.tray.setIcon(make_icon(IDLE_COLOR))
         if self.cfg.get("play_sounds"):
@@ -947,6 +1047,12 @@ class Controller(QObject):
         self._history_dialog = dialog
         dialog.exec()
         self._history_dialog = None
+
+    def open_error_log(self) -> None:
+        try:
+            os.startfile(str(errlog.ensure_file()))
+        except OSError as exc:
+            self._show_error(t("Не открылось: {error}", error=exc))
 
     def quit(self) -> None:
         self.clipshot.set_enabled(False)

@@ -445,4 +445,17 @@ EN: dict[str, str] = {
     "назначьте клавишу": "assign a key",
     "совпадает с другой клавишей Шёпота": "same as another Shepot key",
     "устройство не открылось": "the device did not open",
+    # ------------------------------------------------- errors, deadline, log
+    "Сервер не ответил вовремя — проверьте интернет и попробуйте ещё раз.": "The server didn't answer in time — check your internet connection and try again.",
+    "Доступ запрещён: у ключа нет прав на эту модель или регион не поддерживается.": "Access denied: the key has no access to this model, or the region isn't supported.",
+    "Модель не найдена — проверьте её название в настройках.": "Model not found — check its name in Settings.",
+    "Баланс API исчерпан — пополните счёт у провайдера.": "The API balance is used up — top up your account with the provider.",
+    "Слишком много запросов — подождите немного и повторите.": "Too many requests — wait a moment and try again.",
+    "Сервер временно недоступен (код {code}) — попробуйте ещё раз.": "The server is temporarily unavailable (code {code}) — try again.",
+    "Запрос отклонён (код {code}): {reason}": "Request rejected (code {code}): {reason}",
+    "Ошибка распознавания: {error}": "Speech recognition error: {error}",
+    "Журнал ошибок…": "Error log…",
+    "Отменено": "Cancelled",
+    "нет ответа за {seconds} с": "no answer in {seconds} s",
+    "Сервер не ответил за {seconds} с — попробуйте ещё раз": "The server didn't answer in {seconds} s — try again",
 }
