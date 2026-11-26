@@ -145,8 +145,11 @@ def controller(monkeypatch, tmp_path):
     inserted = []
     monkeypatch.setattr(inserter, "insert", lambda text, **k: inserted.append(text) or True)
 
+    from shepot import i18n
+    monkeypatch.setattr(i18n, "system_language", lambda: "en")   # как на раннере CI: Windows по-английски
     qapp = QApplication.instance() or QApplication([])
     c = A.Controller(qapp)
+    i18n.set_language("ru")                                       # тексты острова проверяем по-русски
     for key, value in {"play_sounds": False, "voice_edit": False, "live_transcribe": False,
                        "learn_corrections": False, "window_context": False, "hud": True, "mode": "raw"}.items():
         c.cfg._data[key] = value
@@ -156,6 +159,7 @@ def controller(monkeypatch, tmp_path):
     c._test = SimpleNamespace(inserted=inserted, shown=shown, qapp=qapp, A=A)
     yield c
     c.claude_bridge.stop()
+    i18n.set_language("ru")
 
 
 def _run_until(c, done, limit=10.0):
